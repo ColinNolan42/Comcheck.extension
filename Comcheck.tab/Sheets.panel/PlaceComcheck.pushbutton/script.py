@@ -77,17 +77,29 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             y = SHEET_ORIGIN_Y + (ROWS - 1 - row) * (CELL_H + GAP)
             origin = XYZ(x, y, 0)
 
-            # WARNING: NOT 100% SURE - PdfImportOptions may not exist before Revit 2022
-            opts = PdfImportOptions()
+            # THIS IS THE CORRECTED METHOD - ImageTypeOptions is the real API class
+            # PageNumber is 1-based (page 1 = first page)
+            img_opts = ImageTypeOptions(pdf_path, False, page_num + 1)
 
-            # WARNING: NOT 100% SURE - may need to be page_num instead of page_num + 1
-            opts.PageNumber = page_num + 1
+            # WARNING: Resolution is set to 150dpi - change to 72, 150, or 300 if needed
+            img_opts.Resolution = 150
 
-            # WARNING: NOT 100% SURE - MediumDefinition may not be correct enum name
-            opts.Resolution = PdfResolution.MediumDefinition
+            # Create the image type (registers the PDF page in the project)
+            img_type_id = ImageType.Create(doc, img_opts)
 
-            # WARNING: NOT 100% SURE - pages may all stack if origin arg does not work
-            doc.Import(pdf_path, opts, sheet, origin)
+            # Now place it on the sheet
+            # WARNING: BoxPlacement.TopLeft means origin point = top left corner of image
+            # If placement is off, try BoxPlacement.Center instead
+            place_opts = ImagePlacementOptions()
+            place_opts.PlacementPoint = BoxPlacement.TopLeft
+            place_opts.Location = origin
+
+            # WARNING: Width scaling may need adjustment to match your sheet
+            place_opts.FitBoundingBox = True
+            place_opts.WidthScale = CELL_W
+            place_opts.HeightScale = CELL_H
+
+            ImageInstance.Create(doc, sheet, img_type_id, place_opts)
 
 forms.alert(
     "Done! {} sheet(s) created with {} pages placed.".format(num_sheets, page_count),
