@@ -57,9 +57,9 @@ tb_id = tb_types[0].Id
 # 5. Calculate Sheet Count
 num_sheets = (page_count + PAGES_PER_SHEET - 1) // PAGES_PER_SHEET
 
-# FIXED: get the type directly from the ImageTypeOptions class itself
-# rather than via string lookup which was returning None
-ito_type = ImageTypeOptions.GetType()
+# FIXED: use clr.GetClrType() which is the correct IronPython way
+# to get a .NET type for reflection
+ito_type = clr.GetClrType(ImageTypeOptions)
 ctor = ito_type.GetConstructor(
     Array[System.Type]([System.String, System.Boolean])
 )
