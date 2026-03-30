@@ -79,13 +79,14 @@ with revit.Transaction("Place Comcheck PDF Pages"):
 
             img_opts = ImageTypeOptions(pdf_path, 0, page_num)
             img_opts.Resolution = 150
-            img_type_id = ImageType.Create(doc, img_opts)
+            img_type = ImageType.Create(doc, img_opts)
 
             place_opts = ImagePlacementOptions()
             place_opts.PlacementPoint = BoxPlacement.TopLeft
             place_opts.Location = origin
 
-            ImageInstance.Create(doc, sheet, img_type_id, place_opts)
+            # FIXED: now passing img_type.Id instead of img_type
+            ImageInstance.Create(doc, sheet, img_type.Id, place_opts)
 
 forms.alert(
     "Done! {} sheet(s) created with {} pages placed.".format(num_sheets, page_count),
