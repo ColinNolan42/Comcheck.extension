@@ -3,6 +3,7 @@
 # Place Comcheck PDF pages on Revit sheets in a 3x2 grid
 
 import os
+import re
 import clr
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
@@ -40,35 +41,32 @@ if not page_count:
     script.exit()
 page_count = int(page_count)
 
-# 3. Ask for sheet number prefix
-sheet_prefix = forms.ask_for_string(
-    prompt='Enter sheet number prefix (e.g. M, E, P)',
-    title='Sheet Prefix',
-    default='M'
+# 3. Ask for full sheet number and name in one box
+# Example input: M005 - COMCHECK
+# Script will parse the number and increment it for additional sheets
+first_sheet_full = forms.ask_for_string(
+    prompt='Enter full sheet number and name (e.g. M005 - COMCHECK)\nAdditional sheets will auto increment the number.',
+    title='Sheet Number and Name',
+    default='M005 - COMCHECK'
 )
-if not sheet_prefix:
+if not first_sheet_full:
     script.exit()
 
-# 4. Ask for starting sheet number
-sheet_start = forms.ask_for_string(
-    prompt='Enter starting sheet number (e.g. 5 will create M005, M006...)',
-    title='Starting Sheet Number',
-    default='5'
-)
-if not sheet_start:
-    script.exit()
-sheet_start = int(sheet_start)
+# Parse the input - split on first space to get number vs name
+# Handles formats like: M005 - COMCHECK, M005-COMCHECK, M005 COMCHECK
+match = re.match(r'^([A-Za-z]+)(\d+)\s*[-\s]?\s*(.+)$', first_sheet_full.strip())
+if not match:
+    forms.alert(
+        "Could not parse sheet number. Please use format: M005 - COMCHECK",
+        exitscript=True
+    )
 
-# 5. Ask for sheet name
-sheet_name = forms.ask_for_string(
-    prompt='Enter sheet name (e.g. COMCHECK, ENERGY COMPLIANCE)',
-    title='Sheet Name',
-    default='COMCHECK'
-)
-if not sheet_name:
-    script.exit()
+sheet_prefix  = match.group(1).upper()        # e.g. M
+sheet_start   = int(match.group(2))            # e.g. 5
+sheet_name    = match.group(3).strip().upper() # e.g. COMCHECK
+zero_pad      = len(match.group(2))            # preserve zero padding length
 
-# 6. Titleblock picker
+# 4. Titleblock picker
 tb_collector = FilteredElementCollector(doc)\
     .OfCategory(BuiltInCategory.OST_TitleBlocks)\
     .WhereElementIsElementType()
@@ -95,7 +93,7 @@ if not selected_tb_name:
 selected_tb = tb_dict[selected_tb_name]
 tb_id = selected_tb.Id
 
-# 7. User picks sheet size since titleblock parameters are not reliably readable
+# 5. User picks sheet size
 sheet_size = forms.SelectFromList.show(
     ['24 x 36', '30 x 42'],
     title='Select Sheet Size',
@@ -110,27 +108,26 @@ COLS = 3
 ROWS = 2
 
 if sheet_size == '24 x 36':
-    # All values in feet
-    sheet_w       = 3.0      # 36 inches
-    sheet_h       = 2.0      # 24 inches
+    sheet_w       = 3.0
+    sheet_h       = 2.0
     MARGIN_LEFT   = 0.05
     MARGIN_TOP    = 0.10
-    MARGIN_RIGHT  = 0.70     # right titleblock strip
+    MARGIN_RIGHT  = 0.70
     MARGIN_BOTTOM = 0.20
     GAP_COL       = 0.04
     GAP_ROW       = 0.06
 else:
-    # 30 x 42
-    sheet_w       = 3.5      # 42 inches
-    sheet_h       = 2.5      # 30 inches
-    MARGIN_LEFT   = 0.05
-    MARGIN_TOP    = 0.10
-    MARGIN_RIGHT  = 0.80
-    MARGIN_BOTTOM = 0.20
+    # 30 x 42 - shifted slightly more left and down
+    sheet_w       = 3.5
+    sheet_h       = 2.5
+    MARGIN_LEFT   = 0.03     # more left
+    MARGIN_TOP    = 0.15     # more down from top
+    MARGIN_RIGHT  = 0.85
+    MARGIN_BOTTOM = 0.25
     GAP_COL       = 0.05
     GAP_ROW       = 0.08
 
-# Auto calculate cell sizes based on available space
+# Auto calculate cell sizes
 available_w = sheet_w - MARGIN_LEFT - MARGIN_RIGHT - (GAP_COL * (COLS - 1))
 available_h = sheet_h - MARGIN_TOP - MARGIN_BOTTOM - (GAP_ROW * (ROWS - 1))
 
@@ -140,18 +137,19 @@ CELL_H = available_h / ROWS
 SHEET_ORIGIN_X = MARGIN_LEFT
 SHEET_ORIGIN_Y = sheet_h - MARGIN_TOP
 
-# 8. Calculate Sheet Count
+# 6. Calculate Sheet Count
 num_sheets = (page_count + PAGES_PER_SHEET - 1) // PAGES_PER_SHEET
 
-# 9. Create Sheets and Place Pages
+# 7. Create Sheets and Place Pages
 with revit.Transaction("Place Comcheck PDF Pages"):
     for sheet_idx in range(num_sheets):
 
         sheet = ViewSheet.Create(doc, tb_id)
 
+        # Increment the number, preserve zero padding
         sheet_number = "{}{}".format(
             sheet_prefix,
-            str(sheet_start + sheet_idx).zfill(3)
+            str(sheet_start + sheet_idx).zfill(zero_pad)
         )
         sheet.SheetNumber = sheet_number
         sheet.Name = sheet_name
@@ -184,18 +182,14 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             place_opts.Location = origin
 
             img_instance = ImageInstance.Create(doc, sheet, img_type.Id, place_opts)
-
-            # RESIZE the image to fit the calculated cell size
-            # WARNING: not 100% sure if Width/Height are the correct
-            # property names - may error and need adjustment
             img_instance.Width = CELL_W
             img_instance.Height = CELL_H
 
 forms.alert(
     "Done! {} sheet(s) created: {}{} to {}{}\nSheet size: {}".format(
         num_sheets,
-        sheet_prefix, str(sheet_start).zfill(3),
-        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(3),
+        sheet_prefix, str(sheet_start).zfill(zero_pad),
+        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(zero_pad),
         sheet_size
     ),
     title="Comcheck Importer"
