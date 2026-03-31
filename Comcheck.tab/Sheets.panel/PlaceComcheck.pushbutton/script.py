@@ -17,14 +17,32 @@ from System import Array
 doc = revit.doc
 uidoc = revit.uidoc
 
+# Check Revit version
+app = revit.doc.Application
+revit_version = int(app.VersionNumber)
+
+if revit_version < 2021:
+    forms.alert(
+        "This script requires Revit 2021 or newer.\nYou are running Revit {}.".format(revit_version),
+        exitscript=True
+    )
+
 ito_type = clr.GetClrType(ImageTypeOptions)
-ctor = ito_type.GetConstructor(
-    Array[System.Type]([
-        clr.GetClrType(System.String),
-        clr.GetClrType(System.Boolean),
-        clr.GetClrType(ImageTypeSource)
-    ])
-)
+
+if revit_version >= 2021:
+    ctor = ito_type.GetConstructor(
+        Array[System.Type]([
+            clr.GetClrType(System.String),
+            clr.GetClrType(System.Boolean),
+            clr.GetClrType(ImageTypeSource)
+        ])
+    )
+else:
+    ctor = ito_type.GetConstructor(
+        Array[System.Type]([
+            clr.GetClrType(System.String)
+        ])
+    )
 
 # 1. User picks PDF
 pdf_path = forms.pick_file(file_ext='pdf', title='Select Comcheck PDF')
@@ -41,28 +59,48 @@ if not page_count:
     script.exit()
 page_count = int(page_count)
 
-# 3. Ask for full sheet number and name in one box
-first_sheet_full = forms.ask_for_string(
-    prompt='Enter full sheet number and name (e.g. M005 - COMCHECK)\nAdditional sheets will auto increment the number.',
-    title='Sheet Number and Name',
-    default='M005 - COMCHECK'
+# 3. Ask for sheet prefix
+sheet_prefix = forms.ask_for_string(
+    prompt='Enter sheet prefix (e.g. M, E, P)',
+    title='Sheet Prefix',
+    default='M'
 )
-if not first_sheet_full:
+if not sheet_prefix:
     script.exit()
+sheet_prefix = sheet_prefix.upper().strip()
 
-match = re.match(r'^([A-Za-z]+)(\d+)\s*[-\s]?\s*(.+)$', first_sheet_full.strip())
-if not match:
-    forms.alert(
-        "Could not parse sheet number. Please use format: M005 - COMCHECK",
-        exitscript=True
-    )
+# 4. Ask for sheet number
+# Handles any format - M0.4, M04, M005, M4 etc
+# Only the LAST number in the sequence will increment
+sheet_number_input = forms.ask_for_string(
+    prompt='Enter sheet number (e.g. 04, 0.4, 005)\nOnly the last number will increment for additional sheets.',
+    title='Sheet Number',
+    default='005'
+)
+if not sheet_number_input:
+    script.exit()
+sheet_number_input = sheet_number_input.strip()
 
-sheet_prefix  = match.group(1).upper()
-sheet_start   = int(match.group(2))
-sheet_name    = match.group(3).strip().upper()
-zero_pad      = len(match.group(2))
+# Parse the last number in the input so we can increment it
+# Examples: 0.4 -> last number is 4, 04 -> last number is 4, 005 -> last number is 5
+last_num_match = re.search(r'(\d+)$', sheet_number_input)
+if not last_num_match:
+    forms.alert("Could not parse sheet number. Please enter a number like 04, 0.4, or 005", exitscript=True)
 
-# 4. Titleblock picker
+last_num_str   = last_num_match.group(1)          # e.g. "4" from "0.4"
+last_num_int   = int(last_num_str)                 # e.g. 4
+last_num_pad   = len(last_num_str)                 # e.g. 1
+prefix_part    = sheet_number_input[:last_num_match.start()]  # e.g. "0." from "0.4"
+
+def make_sheet_number(idx):
+    # Increment only the last number, preserve everything before it
+    new_num = str(last_num_int + idx).zfill(last_num_pad)
+    return "{}{}{}".format(sheet_prefix, prefix_part, new_num)
+
+# Sheet name always defaults to COMCHECK
+sheet_name = "COMCHECK"
+
+# 5. Titleblock picker
 tb_collector = FilteredElementCollector(doc)\
     .OfCategory(BuiltInCategory.OST_TitleBlocks)\
     .WhereElementIsElementType()
@@ -89,7 +127,7 @@ if not selected_tb_name:
 selected_tb = tb_dict[selected_tb_name]
 tb_id = selected_tb.Id
 
-# 5. User picks sheet size
+# 6. User picks sheet size
 sheet_size = forms.SelectFromList.show(
     ['24 x 36', '30 x 42'],
     title='Select Sheet Size',
@@ -106,14 +144,13 @@ ROWS = 2
 if sheet_size == '24 x 36':
     sheet_w       = 3.0
     sheet_h       = 2.0
-    MARGIN_LEFT   = 0.5     # shifted more right
+    MARGIN_LEFT   = 0.18
     MARGIN_TOP    = 0.10
     MARGIN_RIGHT  = 0.70
     MARGIN_BOTTOM = 0.20
     GAP_COL       = 0.04
     GAP_ROW       = 0.06
 else:
-    # 30 x 42
     sheet_w       = 3.5
     sheet_h       = 2.5
     MARGIN_LEFT   = 0.03
@@ -133,20 +170,16 @@ CELL_H = available_h / ROWS
 SHEET_ORIGIN_X = MARGIN_LEFT
 SHEET_ORIGIN_Y = sheet_h - MARGIN_TOP
 
-# 6. Calculate Sheet Count
+# 7. Calculate Sheet Count
 num_sheets = (page_count + PAGES_PER_SHEET - 1) // PAGES_PER_SHEET
 
-# 7. Create Sheets and Place Pages
+# 8. Create Sheets and Place Pages
 with revit.Transaction("Place Comcheck PDF Pages"):
     for sheet_idx in range(num_sheets):
 
         sheet = ViewSheet.Create(doc, tb_id)
 
-        sheet_number = "{}{}".format(
-            sheet_prefix,
-            str(sheet_start + sheet_idx).zfill(zero_pad)
-        )
-        sheet.SheetNumber = sheet_number
+        sheet.SheetNumber = make_sheet_number(sheet_idx)
         sheet.Name = sheet_name
 
         comments_param = sheet.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
@@ -164,9 +197,15 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             y = SHEET_ORIGIN_Y - row * (CELL_H + GAP_ROW)
             origin = XYZ(x, y, 0)
 
-            img_opts = ctor.Invoke(
-                Array[System.Object]([pdf_path, False, ImageTypeSource.Import])
-            )
+            if revit_version >= 2021:
+                img_opts = ctor.Invoke(
+                    Array[System.Object]([pdf_path, False, ImageTypeSource.Import])
+                )
+            else:
+                img_opts = ctor.Invoke(
+                    Array[System.Object]([pdf_path])
+                )
+
             img_opts.PageNumber = page_num + 1
             img_opts.Resolution = 150
 
@@ -181,10 +220,10 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             img_instance.Height = CELL_H
 
 forms.alert(
-    "Done! {} sheet(s) created: {}{} to {}{}\nSheet size: {}".format(
+    "Done! {} sheet(s) created: {} to {}\nSheet size: {}".format(
         num_sheets,
-        sheet_prefix, str(sheet_start).zfill(zero_pad),
-        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(zero_pad),
+        make_sheet_number(0),
+        make_sheet_number(num_sheets - 1),
         sheet_size
     ),
     title="Comcheck Importer"
