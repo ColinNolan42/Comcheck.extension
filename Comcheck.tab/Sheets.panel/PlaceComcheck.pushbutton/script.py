@@ -76,7 +76,6 @@ tb_types = list(tb_collector)
 if not tb_types:
     forms.alert("No titleblock types found in project.", exitscript=True)
 
-# Build a dictionary of name -> element for the picker
 tb_dict = {}
 for tb in tb_types:
     family_name = tb.Family.Name
@@ -84,7 +83,6 @@ for tb in tb_types:
     display_name = "{} : {}".format(family_name, type_name)
     tb_dict[display_name] = tb
 
-# Show picker dialog
 selected_tb_name = forms.SelectFromList.show(
     sorted(tb_dict.keys()),
     title='Select Titleblock',
@@ -94,19 +92,50 @@ selected_tb_name = forms.SelectFromList.show(
 if not selected_tb_name:
     script.exit()
 
-tb_id = tb_dict[selected_tb_name].Id
+selected_tb = tb_dict[selected_tb_name]
+tb_id = selected_tb.Id
 
-# 7. Layout Settings
-# WARNING: ALL MEASUREMENTS ARE IN FEET
-# WARNING: ADJUST CELL_W, CELL_H, ORIGIN TO MATCH YOUR TITLEBLOCK
+# 7. Auto detect sheet size and set layout accordingly
+# Read width and height from titleblock type parameters (values are in feet)
+tb_width_param  = selected_tb.get_Parameter(BuiltInParameter.SHEET_WIDTH)
+tb_height_param = selected_tb.get_Parameter(BuiltInParameter.SHEET_HEIGHT)
+
+# WARNING: if these parameters return None your titleblock may store
+# dimensions differently - in that case we fall back to 24x36 defaults
+if tb_width_param and tb_height_param:
+    sheet_w = tb_width_param.AsDouble()   # in feet
+    sheet_h = tb_height_param.AsDouble()  # in feet
+else:
+    # WARNING: fallback to 24x36 if parameters not found
+    sheet_w = 3.0   # 36 inches
+    sheet_h = 2.0   # 24 inches
+    forms.alert(
+        "Could not read sheet size from titleblock. Defaulting to 24x36.",
+        title="Sheet Size Warning"
+    )
+
 PAGES_PER_SHEET = 6
 COLS = 3
 ROWS = 2
-SHEET_ORIGIN_X = 0.05
-SHEET_ORIGIN_Y = 2.25
-CELL_W = 0.725
-CELL_H = 0.95
-GAP = 0.08
+
+# Margins and gaps in feet
+MARGIN_LEFT   = 0.05
+MARGIN_TOP    = 0.20
+MARGIN_RIGHT  = 0.75   # right side reserved for titleblock border
+MARGIN_BOTTOM = 0.30   # bottom reserved for titleblock info strip
+GAP_COL       = 0.06   # gap between columns
+GAP_ROW       = 0.08   # gap between rows
+
+# Calculate available space and auto size each cell
+available_w = sheet_w - MARGIN_LEFT - MARGIN_RIGHT - (GAP_COL * (COLS - 1))
+available_h = sheet_h - MARGIN_TOP - MARGIN_BOTTOM - (GAP_ROW * (ROWS - 1))
+
+CELL_W = available_w / COLS
+CELL_H = available_h / ROWS
+
+# Origin is top left of the grid
+SHEET_ORIGIN_X = MARGIN_LEFT
+SHEET_ORIGIN_Y = sheet_h - MARGIN_TOP
 
 # 8. Calculate Sheet Count
 num_sheets = (page_count + PAGES_PER_SHEET - 1) // PAGES_PER_SHEET
@@ -135,8 +164,8 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             col = i % COLS
             row = i // COLS
 
-            x = SHEET_ORIGIN_X + col * (CELL_W + GAP)
-            y = SHEET_ORIGIN_Y - row * (CELL_H + GAP)
+            x = SHEET_ORIGIN_X + col * (CELL_W + GAP_COL)
+            y = SHEET_ORIGIN_Y - row * (CELL_H + GAP_ROW)
             origin = XYZ(x, y, 0)
 
             img_opts = ctor.Invoke(
@@ -154,10 +183,11 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             ImageInstance.Create(doc, sheet, img_type.Id, place_opts)
 
 forms.alert(
-    "Done! {} sheet(s) created: {}{} to {}{}".format(
+    "Done! {} sheet(s) created: {}{} to {}{}\nSheet size detected: {:.0f} x {:.0f} inches".format(
         num_sheets,
         sheet_prefix, str(sheet_start).zfill(3),
-        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(3)
+        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(3),
+        sheet_w * 12, sheet_h * 12
     ),
     title="Comcheck Importer"
 )
