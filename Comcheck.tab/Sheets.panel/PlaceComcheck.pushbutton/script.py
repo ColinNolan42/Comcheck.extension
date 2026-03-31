@@ -40,24 +40,47 @@ if not page_count:
     script.exit()
 page_count = int(page_count)
 
-# 3. Layout Settings
+# 3. Ask for sheet number prefix
+sheet_prefix = forms.ask_for_string(
+    prompt='Enter sheet number prefix (e.g. M, E, P)',
+    title='Sheet Prefix',
+    default='M'
+)
+if not sheet_prefix:
+    script.exit()
+
+# 4. Ask for starting sheet number
+sheet_start = forms.ask_for_string(
+    prompt='Enter starting sheet number (e.g. 5 will create M005, M006...)',
+    title='Starting Sheet Number',
+    default='5'
+)
+if not sheet_start:
+    script.exit()
+sheet_start = int(sheet_start)
+
+# 5. Ask for sheet name
+sheet_name = forms.ask_for_string(
+    prompt='Enter sheet name (e.g. COMCHECK, ENERGY COMPLIANCE)',
+    title='Sheet Name',
+    default='COMCHECK'
+)
+if not sheet_name:
+    script.exit()
+
+# 6. Layout Settings
 # WARNING: ALL MEASUREMENTS ARE IN FEET
 # WARNING: ADJUST CELL_W, CELL_H, ORIGIN TO MATCH YOUR TITLEBLOCK
 PAGES_PER_SHEET = 6
 COLS = 3
 ROWS = 2
-SHEET_ORIGIN_X = 0.05    # close to left edge
-SHEET_ORIGIN_Y = 2.25    # pushed higher up the sheet
+SHEET_ORIGIN_X = 0.05
+SHEET_ORIGIN_Y = 2.25
 CELL_W = 0.725
 CELL_H = 0.95
-GAP = 0.08               # more space between rows
+GAP = 0.08
 
-# WARNING: CHANGE THESE SHEET NUMBERS TO MATCH YOUR COMPANY CONVENTION
-SHEET_NUMBER_PREFIX = "M"
-SHEET_NUMBER_START = 5
-SHEET_NAME = "COMCHECK"
-
-# 4. Find Titleblock
+# 7. Find Titleblock
 tb_collector = FilteredElementCollector(doc)\
     .OfCategory(BuiltInCategory.OST_TitleBlocks)\
     .WhereElementIsElementType()
@@ -68,21 +91,21 @@ if not tb_types:
 # WARNING: GRABS FIRST TITLEBLOCK - MAY NOT BE THE RIGHT ONE
 tb_id = tb_types[0].Id
 
-# 5. Calculate Sheet Count
+# 8. Calculate Sheet Count
 num_sheets = (page_count + PAGES_PER_SHEET - 1) // PAGES_PER_SHEET
 
-# 6. Create Sheets and Place Pages
+# 9. Create Sheets and Place Pages
 with revit.Transaction("Place Comcheck PDF Pages"):
     for sheet_idx in range(num_sheets):
 
         sheet = ViewSheet.Create(doc, tb_id)
 
         sheet_number = "{}{}".format(
-            SHEET_NUMBER_PREFIX,
-            str(SHEET_NUMBER_START + sheet_idx).zfill(3)
+            sheet_prefix,
+            str(sheet_start + sheet_idx).zfill(3)
         )
         sheet.SheetNumber = sheet_number
-        sheet.Name = SHEET_NAME
+        sheet.Name = sheet_name
 
         comments_param = sheet.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
         if comments_param:
@@ -114,6 +137,10 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             ImageInstance.Create(doc, sheet, img_type.Id, place_opts)
 
 forms.alert(
-    "Done! {} sheet(s) created with {} pages placed.".format(num_sheets, page_count),
+    "Done! {} sheet(s) created: {}{} to {}{}".format(
+        num_sheets,
+        sheet_prefix, str(sheet_start).zfill(3),
+        sheet_prefix, str(sheet_start + num_sheets - 1).zfill(3)
+    ),
     title="Comcheck Importer"
 )
