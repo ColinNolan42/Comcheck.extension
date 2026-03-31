@@ -16,7 +16,6 @@ from System import Array
 doc = revit.doc
 uidoc = revit.uidoc
 
-# FIXED: explicitly grab ImageTypeSource enum before wildcard import loses it
 ito_type = clr.GetClrType(ImageTypeOptions)
 ctor = ito_type.GetConstructor(
     Array[System.Type]([
@@ -47,14 +46,16 @@ page_count = int(page_count)
 PAGES_PER_SHEET = 6
 COLS = 3
 ROWS = 2
-SHEET_ORIGIN_X = 0.5
-SHEET_ORIGIN_Y = 0.4
+# WARNING: SHEET_ORIGIN is the TOP LEFT starting point of the grid
+# Revit Y is measured from bottom up so higher Y = higher on sheet
+# Adjusted to push pages toward top left corner
+SHEET_ORIGIN_X = 0.05    # very close to left edge
+SHEET_ORIGIN_Y = 1.55    # pushed up toward top of sheet
 CELL_W = 0.725
 CELL_H = 0.95
-GAP = 0.04
+GAP = 0.02
 
 # WARNING: CHANGE THESE SHEET NUMBERS TO MATCH YOUR COMPANY CONVENTION
-# Sheet numbers will be M005, M006, M007... depending on how many sheets
 SHEET_NUMBER_PREFIX = "M"
 SHEET_NUMBER_START = 5
 SHEET_NAME = "COMCHECK"
@@ -79,7 +80,6 @@ with revit.Transaction("Place Comcheck PDF Pages"):
 
         sheet = ViewSheet.Create(doc, tb_id)
 
-        # Sheet number format: M005, M006, M007...
         sheet_number = "{}{}".format(
             SHEET_NUMBER_PREFIX,
             str(SHEET_NUMBER_START + sheet_idx).zfill(3)
@@ -87,9 +87,6 @@ with revit.Transaction("Place Comcheck PDF Pages"):
         sheet.SheetNumber = sheet_number
         sheet.Name = SHEET_NAME
 
-        # WARNING: Revit does not have a native sheet category parameter
-        # This sets the Comments parameter as a workaround to tag it as MECHANICAL
-        # If your titleblock has a Discipline parameter use that instead
         comments_param = sheet.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
         if comments_param:
             comments_param.Set("MECHANICAL")
@@ -102,7 +99,8 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             row = i // COLS
 
             x = SHEET_ORIGIN_X + col * (CELL_W + GAP)
-            y = SHEET_ORIGIN_Y + (ROWS - 1 - row) * (CELL_H + GAP)
+            # row 0 = top row, Revit Y goes up so top row has highest Y
+            y = SHEET_ORIGIN_Y - row * (CELL_H + GAP)
             origin = XYZ(x, y, 0)
 
             img_opts = ctor.Invoke(
