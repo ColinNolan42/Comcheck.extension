@@ -53,6 +53,12 @@ CELL_W = 0.725
 CELL_H = 0.95
 GAP = 0.04
 
+# WARNING: CHANGE THESE SHEET NUMBERS TO MATCH YOUR COMPANY CONVENTION
+# Sheet numbers will be M005, M006, M007... depending on how many sheets
+SHEET_NUMBER_PREFIX = "M"
+SHEET_NUMBER_START = 5
+SHEET_NAME = "COMCHECK"
+
 # 4. Find Titleblock
 tb_collector = FilteredElementCollector(doc)\
     .OfCategory(BuiltInCategory.OST_TitleBlocks)\
@@ -73,10 +79,20 @@ with revit.Transaction("Place Comcheck PDF Pages"):
 
         sheet = ViewSheet.Create(doc, tb_id)
 
-        # WARNING: CHANGE SHEET NUMBER TO MATCH YOUR COMPANY CONVENTION
-        sheet.SheetNumber = "COMcheck-{}".format(sheet_idx + 1)
-        sheet.Name = "COMcheck Energy Compliance ({} of {})".format(
-            sheet_idx + 1, num_sheets)
+        # Sheet number format: M005, M006, M007...
+        sheet_number = "{}{}".format(
+            SHEET_NUMBER_PREFIX,
+            str(SHEET_NUMBER_START + sheet_idx).zfill(3)
+        )
+        sheet.SheetNumber = sheet_number
+        sheet.Name = SHEET_NAME
+
+        # WARNING: Revit does not have a native sheet category parameter
+        # This sets the Comments parameter as a workaround to tag it as MECHANICAL
+        # If your titleblock has a Discipline parameter use that instead
+        comments_param = sheet.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
+        if comments_param:
+            comments_param.Set("MECHANICAL")
 
         start_page = sheet_idx * PAGES_PER_SHEET
         end_page = min(start_page + PAGES_PER_SHEET, page_count)
@@ -89,8 +105,6 @@ with revit.Transaction("Place Comcheck PDF Pages"):
             y = SHEET_ORIGIN_Y + (ROWS - 1 - row) * (CELL_H + GAP)
             origin = XYZ(x, y, 0)
 
-            # FIXED: invoke constructor with all 3 required args
-            # (String path, Boolean useRelativePath, ImageTypeSource sourceType)
             img_opts = ctor.Invoke(
                 Array[System.Object]([pdf_path, False, ImageTypeSource.Import])
             )
