@@ -24,20 +24,13 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 clr.AddReference('System')
 
-from System import Array, Type
-from System.Collections.Generic import List
-
 # Revit API - explicit imports only, no wildcards
 from Autodesk.Revit.DB import (
     XYZ,
-    Line,
     ElementId,
     BuiltInParameter,
     BuiltInCategory,
-    FilteredElementCollector,
-    FamilySymbol,
-    Transaction,
-    StructuralType
+    Transaction
 )
 from Autodesk.Revit.DB.Plumbing import (
     Pipe,
@@ -272,7 +265,7 @@ def copy_main_properties(pipe):
 
     # ---- Copy these three IDs directly ----
     pipe_type_id = pipe.GetTypeId()
-    
+
     sys_param = pipe.get_Parameter(
         BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM
     )
