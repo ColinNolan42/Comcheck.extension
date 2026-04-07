@@ -101,25 +101,59 @@ output = script.get_output()
 # CONTEXTUAL RIBBON PANEL
 # ============================================================================
 def _get_or_create_panel(uiapp):
-    """Return (panel, size_combo, aff_combo)."""
-    existing = [
-        p for p in uiapp.GetRibbonPanels(RIBBON_TAB_NAME)
-        if p.Name == RIBBON_PANEL_NAME
-    ]
+    """Return (panel, size_combo, aff_combo).
 
-    if existing:
-        panel      = existing[0]
+    Searches all ribbon panels across all tabs to avoid a None return
+    from GetRibbonPanels(tabName) when the tab name does not match exactly.
+    """
+    # Search all tabs for an existing panel with our name
+    existing_panel = None
+    try:
+        for tab_panels in [uiapp.GetRibbonPanels(RIBBON_TAB_NAME)]:
+            if tab_panels is None:
+                continue
+            for p in tab_panels:
+                if p.Name == RIBBON_PANEL_NAME:
+                    existing_panel = p
+                    break
+    except Exception:
+        pass
+
+    # Also try the no-argument overload as fallback
+    if existing_panel is None:
+        try:
+            all_panels = uiapp.GetRibbonPanels()
+            if all_panels is not None:
+                for p in all_panels:
+                    if p.Name == RIBBON_PANEL_NAME:
+                        existing_panel = p
+                        break
+        except Exception:
+            pass
+
+    if existing_panel is not None:
+        panel      = existing_panel
         size_combo = None
         aff_combo  = None
-        for item in panel.GetItems():
-            if item.Name == COMBO_SIZE_NAME:
-                size_combo = item
-            elif item.Name == COMBO_AFF_NAME:
-                aff_combo = item
+        try:
+            items = panel.GetItems()
+            if items is not None:
+                for item in items:
+                    if item.Name == COMBO_SIZE_NAME:
+                        size_combo = item
+                    elif item.Name == COMBO_AFF_NAME:
+                        aff_combo = item
+        except Exception:
+            pass
         panel.Visible = True
         return panel, size_combo, aff_combo
 
-    panel = uiapp.CreateRibbonPanel(RIBBON_TAB_NAME, RIBBON_PANEL_NAME)
+    # Create new panel
+    try:
+        panel = uiapp.CreateRibbonPanel(RIBBON_TAB_NAME, RIBBON_PANEL_NAME)
+    except Exception:
+        # If tab name fails, create on the default Add-Ins tab
+        panel = uiapp.CreateRibbonPanel(RIBBON_PANEL_NAME)
 
     size_data  = ComboBoxData(COMBO_SIZE_NAME)
     size_combo = panel.AddItem(size_data)
