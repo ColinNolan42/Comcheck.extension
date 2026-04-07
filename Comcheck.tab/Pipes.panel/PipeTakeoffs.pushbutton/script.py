@@ -157,13 +157,13 @@ def _get_or_create_panel(uiapp):
 
     size_data  = ComboBoxData(COMBO_SIZE_NAME)
     size_combo = panel.AddItem(size_data)
-    for label in PIPE_SIZES.keys():
-        size_combo.AddMember(ComboBoxMemberData(label, label))
+    size_members = [ComboBoxMemberData(label, label) for label in PIPE_SIZES.keys()]
+    size_combo.AddItems(size_members)
 
     aff_data  = ComboBoxData(COMBO_AFF_NAME)
     aff_combo = panel.AddItem(aff_data)
-    for label in AFF_PRESETS.keys():
-        aff_combo.AddMember(ComboBoxMemberData(label, label))
+    aff_members = [ComboBoxMemberData(label, label) for label in AFF_PRESETS.keys()]
+    aff_combo.AddItems(aff_members)
 
     return panel, size_combo, aff_combo
 
