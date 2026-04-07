@@ -594,7 +594,7 @@ def validate_view():
 # MAIN ENTRY POINT
 # ============================================================================
 def main():
-    uiapp     = revit.uiapp
+    uiapp = __revit__
     is_active = script.get_envvar(ENVVAR_ACTIVE)
 
     if is_active:
