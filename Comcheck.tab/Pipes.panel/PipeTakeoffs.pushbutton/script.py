@@ -32,12 +32,7 @@ from Autodesk.Revit.DB import (
     BuiltInCategory,
     Transaction
 )
-from Autodesk.Revit.DB.Plumbing import (
-    Pipe,
-    PipingSystemType,
-    PipeType,
-    RoutingPreferenceRuleGroupType
-)
+from Autodesk.Revit.DB.Plumbing import Pipe
 from Autodesk.Revit.DB.Mechanical import MechanicalUtils
 from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
 from Autodesk.Revit.Exceptions import (
@@ -312,11 +307,11 @@ def copy_main_properties(pipe):
 # ROUTING PREFERENCE PRE-CHECK
 # ============================================================================
 def check_routing_preferences(pipe_type_id, branch_dia_ft, pipe_type_name):
-    """Verify the main's pipe type has fittings defined at branch diameter.
+    """Verify the main's pipe type has fittings defined.
 
-    Checks routing preferences for tee and elbow families at the
-    user-selected branch size BEFORE creating any elements. Returns
-    a list of warnings (empty list = all good).
+    Uses lazy import for RoutingPreferenceRuleGroupType since it is
+    not available in all Revit versions under the same namespace.
+    If the import fails, the check is skipped gracefully.
 
     Args:
         pipe_type_id: ElementId of the pipe type (copied from main)
@@ -324,7 +319,7 @@ def check_routing_preferences(pipe_type_id, branch_dia_ft, pipe_type_name):
         pipe_type_name: display name for error messages
 
     Returns:
-        list of warning strings (empty if all checks pass)
+        list of warning strings (empty if all checks pass or skipped)
     """
     warnings = []
 
@@ -345,6 +340,13 @@ def check_routing_preferences(pipe_type_id, branch_dia_ft, pipe_type_name):
             "Pipe type '{}' has no routing preferences defined. "
             "Fittings may not place correctly.".format(pipe_type_name)
         )
+        return warnings
+
+    # Lazy import - not available in all Revit/IronPython versions
+    try:
+        from Autodesk.Revit.DB.Plumbing import RoutingPreferenceRuleGroupType
+    except ImportError:
+        # Cannot check rules without the enum - skip gracefully
         return warnings
 
     # Check for tee rule
@@ -379,7 +381,7 @@ def check_routing_preferences(pipe_type_id, branch_dia_ft, pipe_type_name):
             .format(pipe_type_name)
         )
 
-    # Check for pipe segment rule at branch diameter
+    # Check for pipe segment rule
     try:
         seg_rule_count = rpm.GetNumberOfRules(
             RoutingPreferenceRuleGroupType.Segments
@@ -391,7 +393,7 @@ def check_routing_preferences(pipe_type_id, branch_dia_ft, pipe_type_name):
                 .format(pipe_type_name)
             )
     except Exception:
-        pass  # Non-critical, pipes will still create
+        pass  # Non-critical
 
     return warnings
 
