@@ -97,7 +97,7 @@ VALID_PIPE_SIZES = {
     3.0:   '3"',
 }
 
-VALID_SYSTEMS = ["CW", "HW", "HWC", "NG", "NATURAL GAS"]
+VALID_SYSTEMS = ["CW", "HW", "HWC", "NG", "NATURAL GAS", "G"]
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -554,7 +554,11 @@ class WaterPipeFilter(ISelectionFilter):
             if name_param and name_param.AsString():
                 sys_name = name_param.AsString().strip().upper()
 
-        return any(v in sys_name for v in VALID_SYSTEMS)
+        # Exact match first (catches short abbreviations like "G" safely),
+        # then substring match for longer names like "NATURAL GAS"
+        if sys_name in VALID_SYSTEMS:
+            return True
+        return any(v in sys_name for v in VALID_SYSTEMS if len(v) > 1)
 
     def AllowReference(self, reference, position):
         return False
