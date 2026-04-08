@@ -10,7 +10,9 @@ Script builds: tee, 6in rise, elbow, horizontal run, elbow, drop to AFF,
 Assembly: 4 pipe segments + 1 tee + 3 elbows
 All branch pipe properties copied from the clicked main pipe.
 
-On activation a fixture picker dialog appears. ESC or re-click to deactivate.
+On activation a fixture picker dialog appears showing all fixtures with
+pipe size and AFF. A Custom option allows manual entry. ESC or re-click
+the button to deactivate.
 """
 
 # ============================================================================
@@ -23,6 +25,9 @@ from collections import OrderedDict
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 clr.AddReference('System')
+clr.AddReference('PresentationFramework')
+clr.AddReference('PresentationCore')
+clr.AddReference('WindowsBase')
 
 from Autodesk.Revit.DB import (
     XYZ,
@@ -38,19 +43,33 @@ from Autodesk.Revit.Exceptions import (
     InvalidOperationException
 )
 
+import System
+from System.Windows import Window, GridLength, Thickness, HorizontalAlignment, VerticalAlignment
+from System.Windows.Controls import (
+    Grid, StackPanel, ScrollViewer, Border, RadioButton,
+    Label, TextBox, ComboBox, ComboBoxItem, Button,
+    ColumnDefinition, RowDefinition, Separator, GroupBox
+)
+from System.Windows.Media import SolidColorBrush, Color
+from System.Windows import FontWeights, FontStyles
+
 from pyrevit import revit, DB, UI, script, forms
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-ENVVAR_ACTIVE  = "PIPE_TAKEOFFS_ACTIVE"
-ENVVAR_FIXTURE = "PIPE_TAKEOFFS_FIXTURE"
+ENVVAR_ACTIVE       = "PIPE_TAKEOFFS_ACTIVE"
+ENVVAR_FIXTURE      = "PIPE_TAKEOFFS_FIXTURE"
+ENVVAR_CUSTOM_SIZE  = "PIPE_TAKEOFFS_CUSTOM_SIZE"
+ENVVAR_CUSTOM_AFF   = "PIPE_TAKEOFFS_CUSTOM_AFF"
 
-RISE_HEIGHT       = 0.5    # 6 inches in feet
-STUB_LENGTH       = 0.5    # 6 inches in feet
+RISE_HEIGHT       = 0.5
+STUB_LENGTH       = 0.5
 DIAGONAL_WARN_DEG = 5.0
 
-DEFAULT_FIXTURE = "Lavatory"
+DEFAULT_FIXTURE    = "Lavatory"
+DEFAULT_CUSTOM_SIZE = '1/2"'
+DEFAULT_CUSTOM_AFF  = '36"'
 
 # Fixture presets: label -> (nominal diameter inches, AFF inches)
 FIXTURES = OrderedDict([
@@ -64,6 +83,34 @@ FIXTURES = OrderedDict([
     ('Urinal',            (0.75,  24.0)),
 ])
 
+# Pipe sizes available in custom mode
+PIPE_SIZES = OrderedDict([
+    ('1/4"',   0.25),
+    ('3/8"',   0.375),
+    ('1/2"',   0.5),
+    ('3/4"',   0.75),
+    ('1"',     1.0),
+    ('1-1/4"', 1.25),
+    ('1-1/2"', 1.5),
+    ('2"',     2.0),
+    ('2-1/2"', 2.5),
+    ('3"',     3.0),
+])
+
+# AFF presets available in custom mode
+AFF_PRESETS = OrderedDict([
+    ('12"',  12.0),
+    ('18"',  18.0),
+    ('24"',  24.0),
+    ('30"',  30.0),
+    ('34"',  34.0),
+    ('36"',  36.0),
+    ('42"',  42.0),
+    ('48"',  48.0),
+    ('54"',  54.0),
+    ('60"',  60.0),
+])
+
 VALID_SYSTEMS = ["CW", "HW", "HWC"]
 
 doc    = revit.doc
@@ -73,21 +120,358 @@ output = script.get_output()
 
 
 # ============================================================================
-# FIXTURE PICKER DIALOG
+# FIXTURE PICKER WPF DIALOG
 # ============================================================================
-def pick_fixture():
-    """Show a SelectFromList dialog. Returns fixture label or None if cancelled."""
-    saved = script.get_envvar(ENVVAR_FIXTURE) or DEFAULT_FIXTURE
-    if saved not in FIXTURES:
-        saved = DEFAULT_FIXTURE
+class FixturePickerDialog(Window):
+    """WPF dialog showing fixture table with pipe size and AFF columns.
+    Custom row at bottom allows manual size and AFF selection.
+    """
 
-    selected = forms.SelectFromList.show(
-        list(FIXTURES.keys()),
-        title="Pipe Takeoffs - Select Fixture",
-        button_name="Start",
-        default=saved,
-    )
-    return selected  # None if user closed/cancelled
+    # Dark theme colors matching Revit
+    CLR_BG        = Color.FromRgb(45,  45,  45)
+    CLR_PANEL     = Color.FromRgb(55,  55,  55)
+    CLR_ROW_ALT   = Color.FromRgb(50,  50,  50)
+    CLR_HIGHLIGHT = Color.FromRgb(0,   120, 215)
+    CLR_BORDER    = Color.FromRgb(80,  80,  80)
+    CLR_TEXT      = Color.FromRgb(220, 220, 220)
+    CLR_TEXT_DIM  = Color.FromRgb(160, 160, 160)
+    CLR_BTN       = Color.FromRgb(0,   100, 180)
+    CLR_BTN_TEXT  = Color.FromRgb(255, 255, 255)
+
+    def __init__(self, saved_fixture, saved_custom_size, saved_custom_aff):
+        self.result_fixture     = None
+        self.result_dia_ft      = None
+        self.result_aff_ft      = None
+        self._saved_fixture     = saved_fixture
+        self._saved_custom_size = saved_custom_size
+        self._saved_custom_aff  = saved_custom_aff
+        self._radio_buttons     = {}
+        self._custom_size_combo = None
+        self._custom_aff_combo  = None
+        self._build_ui()
+
+    def _brush(self, color):
+        return SolidColorBrush(color)
+
+    def _build_ui(self):
+        self.Title          = "Pipe Takeoffs - Select Fixture"
+        self.Width          = 480
+        self.SizeToContent  = System.Windows.SizeToContent.Height
+        self.ResizeMode     = System.Windows.ResizeMode.NoResize
+        self.WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen
+        self.Background     = self._brush(self.CLR_BG)
+
+        outer = StackPanel()
+        outer.Margin = Thickness(16, 16, 16, 16)
+
+        # Title label
+        title_lbl = Label()
+        title_lbl.Content    = "Select Fixture Type"
+        title_lbl.Foreground = self._brush(self.CLR_TEXT)
+        title_lbl.FontSize   = 14
+        title_lbl.FontWeight = FontWeights.Bold
+        title_lbl.Margin     = Thickness(0, 0, 0, 10)
+        outer.Children.Add(title_lbl)
+
+        # Table header
+        header = self._make_row(
+            "Fixture", "Pipe Size", "AFF",
+            is_header=True
+        )
+        outer.Children.Add(header)
+
+        # Fixture rows
+        for i, (name, (dia_in, aff_in)) in enumerate(FIXTURES.items()):
+            size_label = self._dia_label(dia_in)
+            aff_label  = '{}"'.format(int(aff_in))
+            row        = self._make_fixture_row(name, size_label, aff_label, i)
+            outer.Children.Add(row)
+
+        # Divider
+        sep = Separator()
+        sep.Margin     = Thickness(0, 10, 0, 6)
+        sep.Background = self._brush(self.CLR_BORDER)
+        outer.Children.Add(sep)
+
+        # Custom row
+        custom_section = self._make_custom_row(len(FIXTURES))
+        outer.Children.Add(custom_section)
+
+        # Divider
+        sep2 = Separator()
+        sep2.Margin     = Thickness(0, 10, 0, 10)
+        sep2.Background = self._brush(self.CLR_BORDER)
+        outer.Children.Add(sep2)
+
+        # Start button
+        btn = Button()
+        btn.Content             = "Start"
+        btn.Width               = 120
+        btn.Height              = 32
+        btn.HorizontalAlignment = HorizontalAlignment.Right
+        btn.Background          = self._brush(self.CLR_BTN)
+        btn.Foreground          = self._brush(self.CLR_BTN_TEXT)
+        btn.FontWeight          = FontWeights.Bold
+        btn.BorderThickness     = Thickness(0)
+        btn.Click              += self._on_start
+        outer.Children.Add(btn)
+
+        self.Content = outer
+
+        # Set initial radio selection
+        self._select_initial(self._saved_fixture)
+
+    def _dia_label(self, dia_in):
+        """Convert decimal inches to fraction string."""
+        mapping = {
+            0.25:  '1/4"',
+            0.375: '3/8"',
+            0.5:   '1/2"',
+            0.75:  '3/4"',
+            1.0:   '1"',
+            1.25:  '1-1/4"',
+            1.5:   '1-1/2"',
+            2.0:   '2"',
+            2.5:   '2-1/2"',
+            3.0:   '3"',
+        }
+        return mapping.get(dia_in, '{}"'.format(dia_in))
+
+    def _make_row(self, col1, col2, col3, is_header=False):
+        """Build a 3-column grid row (header version)."""
+        grid = Grid()
+        grid.Margin = Thickness(0, 1, 0, 1)
+
+        for w in [220, 110, 110]:
+            cd = ColumnDefinition()
+            cd.Width = GridLength(w)
+            grid.ColumnDefinitions.Add(cd)
+
+        bg = self.CLR_PANEL if is_header else self.CLR_BG
+
+        border = Border()
+        border.Background   = self._brush(bg)
+        border.Padding      = Thickness(6, 4, 6, 4)
+        Grid.SetColumnSpan(border, 3)
+        grid.Children.Add(border)
+
+        inner = Grid()
+        for w in [220, 110, 110]:
+            cd = ColumnDefinition()
+            cd.Width = GridLength(w)
+            inner.ColumnDefinitions.Add(cd)
+        border.Child = inner
+
+        for col_idx, text in enumerate([col1, col2, col3]):
+            lbl = Label()
+            lbl.Content    = text
+            lbl.Foreground = self._brush(
+                self.CLR_TEXT if is_header else self.CLR_TEXT_DIM
+            )
+            lbl.FontWeight = FontWeights.Bold if is_header else FontWeights.Normal
+            lbl.FontSize   = 11
+            lbl.Padding    = Thickness(2, 0, 2, 0)
+            Grid.SetColumn(lbl, col_idx)
+            inner.Children.Add(lbl)
+
+        return grid
+
+    def _make_fixture_row(self, name, size_label, aff_label, index):
+        """Build a selectable fixture row with radio button."""
+        bg_color = self.CLR_ROW_ALT if index % 2 == 0 else self.CLR_BG
+
+        border = Border()
+        border.Background   = self._brush(bg_color)
+        border.Padding      = Thickness(6, 3, 6, 3)
+        border.Margin       = Thickness(0, 1, 0, 1)
+
+        grid = Grid()
+        for w in [220, 110, 110]:
+            cd = ColumnDefinition()
+            cd.Width = GridLength(w)
+            grid.ColumnDefinitions.Add(cd)
+
+        # Radio button with fixture name
+        rb = RadioButton()
+        rb.Content    = name
+        rb.GroupName  = "FixtureGroup"
+        rb.Foreground = self._brush(self.CLR_TEXT)
+        rb.FontSize   = 11
+        rb.VerticalContentAlignment = VerticalAlignment.Center
+        Grid.SetColumn(rb, 0)
+        grid.Children.Add(rb)
+
+        # Size column
+        size_lbl = Label()
+        size_lbl.Content    = size_label
+        size_lbl.Foreground = self._brush(self.CLR_TEXT)
+        size_lbl.FontSize   = 11
+        size_lbl.Padding    = Thickness(2, 0, 2, 0)
+        Grid.SetColumn(size_lbl, 1)
+        grid.Children.Add(size_lbl)
+
+        # AFF column
+        aff_lbl = Label()
+        aff_lbl.Content    = aff_label
+        aff_lbl.Foreground = self._brush(self.CLR_TEXT)
+        aff_lbl.FontSize   = 11
+        aff_lbl.Padding    = Thickness(2, 0, 2, 0)
+        Grid.SetColumn(aff_lbl, 2)
+        grid.Children.Add(aff_lbl)
+
+        border.Child = grid
+        self._radio_buttons[name] = rb
+        return border
+
+    def _make_custom_row(self, index):
+        """Build the Custom row with dropdown selectors."""
+        bg_color = self.CLR_ROW_ALT if index % 2 == 0 else self.CLR_BG
+
+        border = Border()
+        border.Background = self._brush(bg_color)
+        border.Padding    = Thickness(6, 4, 6, 4)
+        border.Margin     = Thickness(0, 1, 0, 1)
+
+        grid = Grid()
+        for w in [220, 110, 110]:
+            cd = ColumnDefinition()
+            cd.Width = GridLength(w)
+            grid.ColumnDefinitions.Add(cd)
+
+        # Radio button
+        rb = RadioButton()
+        rb.Content    = "Custom"
+        rb.GroupName  = "FixtureGroup"
+        rb.Foreground = self._brush(self.CLR_TEXT)
+        rb.FontSize   = 11
+        rb.VerticalContentAlignment = VerticalAlignment.Center
+        rb.Checked   += self._on_custom_checked
+        rb.Unchecked += self._on_custom_unchecked
+        Grid.SetColumn(rb, 0)
+        grid.Children.Add(rb)
+
+        # Size combo
+        size_cb = ComboBox()
+        size_cb.FontSize  = 11
+        size_cb.IsEnabled = False
+        size_cb.Margin    = Thickness(2, 0, 4, 0)
+        for label in PIPE_SIZES.keys():
+            item = ComboBoxItem()
+            item.Content = label
+            size_cb.Items.Add(item)
+        # Set saved custom size
+        self._set_combo_index(size_cb, self._saved_custom_size, list(PIPE_SIZES.keys()))
+        Grid.SetColumn(size_cb, 1)
+        grid.Children.Add(size_cb)
+
+        # AFF combo
+        aff_cb = ComboBox()
+        aff_cb.FontSize  = 11
+        aff_cb.IsEnabled = False
+        aff_cb.Margin    = Thickness(2, 0, 0, 0)
+        for label in AFF_PRESETS.keys():
+            item = ComboBoxItem()
+            item.Content = label
+            aff_cb.Items.Add(item)
+        # Set saved custom AFF
+        self._set_combo_index(aff_cb, self._saved_custom_aff, list(AFF_PRESETS.keys()))
+        Grid.SetColumn(aff_cb, 2)
+        grid.Children.Add(aff_cb)
+
+        border.Child = grid
+
+        self._radio_buttons['Custom'] = rb
+        self._custom_size_combo = size_cb
+        self._custom_aff_combo  = aff_cb
+        return border
+
+    def _set_combo_index(self, combo, target_label, labels):
+        """Select the combo item matching target_label."""
+        try:
+            idx = labels.index(target_label)
+            combo.SelectedIndex = idx
+        except (ValueError, Exception):
+            combo.SelectedIndex = 0
+
+    def _select_initial(self, saved_fixture):
+        """Pre-select the radio button matching saved_fixture."""
+        if saved_fixture in self._radio_buttons:
+            self._radio_buttons[saved_fixture].IsChecked = True
+        else:
+            # Default to first fixture
+            first = list(self._radio_buttons.keys())[0]
+            self._radio_buttons[first].IsChecked = True
+
+    def _on_custom_checked(self, sender, args):
+        if self._custom_size_combo:
+            self._custom_size_combo.IsEnabled = True
+        if self._custom_aff_combo:
+            self._custom_aff_combo.IsEnabled = True
+
+    def _on_custom_unchecked(self, sender, args):
+        if self._custom_size_combo:
+            self._custom_size_combo.IsEnabled = False
+        if self._custom_aff_combo:
+            self._custom_aff_combo.IsEnabled = False
+
+    def _on_start(self, sender, args):
+        # Find which radio is checked
+        for name, rb in self._radio_buttons.items():
+            if rb.IsChecked:
+                if name == 'Custom':
+                    # Read combo selections
+                    size_idx = self._custom_size_combo.SelectedIndex
+                    aff_idx  = self._custom_aff_combo.SelectedIndex
+
+                    size_keys = list(PIPE_SIZES.keys())
+                    aff_keys  = list(AFF_PRESETS.keys())
+
+                    if size_idx < 0 or size_idx >= len(size_keys):
+                        size_idx = 2  # default 1/2"
+                    if aff_idx < 0 or aff_idx >= len(aff_keys):
+                        aff_idx = 5  # default 36"
+
+                    size_label = size_keys[size_idx]
+                    aff_label  = aff_keys[aff_idx]
+
+                    self.result_fixture = 'Custom ({}, {} AFF)'.format(size_label, aff_label)
+                    self.result_dia_ft  = PIPE_SIZES[size_label] / 12.0
+                    self.result_aff_ft  = AFF_PRESETS[aff_label] / 12.0
+
+                    # Persist custom values
+                    script.set_envvar(ENVVAR_CUSTOM_SIZE, size_label)
+                    script.set_envvar(ENVVAR_CUSTOM_AFF,  aff_label)
+                else:
+                    dia_in, aff_in      = FIXTURES[name]
+                    self.result_fixture = name
+                    self.result_dia_ft  = dia_in / 12.0
+                    self.result_aff_ft  = aff_in / 12.0
+
+                self.DialogResult = True
+                self.Close()
+                return
+
+        forms.alert("Please select a fixture.", title="No Selection")
+
+    def show(self):
+        """Show dialog. Returns (fixture_label, dia_ft, aff_ft) or None."""
+        result = self.ShowDialog()
+        if result:
+            return self.result_fixture, self.result_dia_ft, self.result_aff_ft
+        return None
+
+
+def pick_fixture():
+    """Show the fixture picker dialog. Returns (name, dia_ft, aff_ft) or None."""
+    saved_fixture     = script.get_envvar(ENVVAR_FIXTURE)     or DEFAULT_FIXTURE
+    saved_custom_size = script.get_envvar(ENVVAR_CUSTOM_SIZE) or DEFAULT_CUSTOM_SIZE
+    saved_custom_aff  = script.get_envvar(ENVVAR_CUSTOM_AFF)  or DEFAULT_CUSTOM_AFF
+
+    if saved_fixture not in FIXTURES and not saved_fixture.startswith('Custom'):
+        saved_fixture = DEFAULT_FIXTURE
+
+    dlg = FixturePickerDialog(saved_fixture, saved_custom_size, saved_custom_aff)
+    return dlg.show()
 
 
 # ============================================================================
@@ -458,7 +842,7 @@ def build_takeoff(main_pipe, click1, click2, branch_dia_ft, aff_height):
     place_elbow(drop_pipe, geo['drop_end'], stub_pipe, geo['stub_start'])
 
     logger.debug(
-        "Takeoff complete: {} - {:.3f} ft dia, {:.1f} in AFF"
+        "Takeoff complete: {} - {:.3f} ft dia, {:.1f}\" AFF"
         .format(props['pipe_type_name'], branch_dia_ft, aff_height * 12.0)
     )
 
@@ -493,17 +877,15 @@ def main():
     if not validate_view():
         return
 
-    # Show fixture picker - single dialog on activation only
-    fixture_name = pick_fixture()
-    if fixture_name is None:
+    # Show fixture picker dialog
+    pick_result = pick_fixture()
+    if pick_result is None:
         return  # user cancelled
 
-    # Persist selection for next activation
-    script.set_envvar(ENVVAR_FIXTURE, fixture_name)
+    fixture_name, branch_dia_ft, aff_height_ft = pick_result
 
-    dia_in, aff_in = FIXTURES[fixture_name]
-    branch_dia_ft  = dia_in / 12.0
-    aff_height_ft  = aff_in / 12.0
+    # Persist fixture selection
+    script.set_envvar(ENVVAR_FIXTURE, fixture_name)
 
     script.set_envvar(ENVVAR_ACTIVE, True)
     script.toggle_icon(True)
@@ -517,7 +899,7 @@ def main():
                 ref = uidoc.Selection.PickObject(
                     ObjectType.Element,
                     pipe_filter,
-                    "Pick CW/HW/HWC main pipe  |  Fixture: {}  (ESC to exit)"
+                    "Pick CW/HW/HWC main pipe  |  {}  (ESC to exit)"
                     .format(fixture_name)
                 )
                 main_pipe = doc.GetElement(ref.ElementId)
@@ -529,7 +911,7 @@ def main():
 
                 # Click 2: pick destination
                 click2 = uidoc.Selection.PickPoint(
-                    "Pick destination point  |  Fixture: {}  (ESC to cancel)"
+                    "Pick destination point  |  {}  (ESC to cancel)"
                     .format(fixture_name)
                 )
 
