@@ -194,29 +194,30 @@ def parse_pipe_size(raw):
 
 
 def parse_aff(raw):
-    """Parse AFF height input. Returns height in FEET or None.
+    """Parse AFF height input. Returns height in FEET or None + error string.
+
+    No upper range cap - supports any ceiling height including tall warehouses,
+    stadiums, or projects with elevated base levels. The only physical limit
+    (AFF below main pipe) is validated later in calculate_takeoff_geometry.
 
     Accepts:
-      Inches (no unit = assumed inches):
-        36   48   34.5   18
-      Inches with symbol:
-        36"  48"
+      Bare number assumed inches if > 12, also inches if <= 12
+      (use ft/feet/' suffix if you mean feet for small values):
+        36   48   360   6
+      Inch symbol:
+        36"  48"  360"
       Feet explicit:
-        3'   3ft   3feet   3.0'
+        3'   30'   3ft   30ft   3.5feet
       Feet-inches:
-        3'0"   2'10"   3 ft 4 in   3'-0"
-      Decimal feet:
-        3.0   (ambiguous - if > 12 treated as inches, else feet)
+        3'0"   2'10"   30'-6"   30 ft 6 in
     """
     t = _clean(raw)
     if not t:
         return None, "Empty input."
 
-    t_upper = t.upper()
-
-    # Feet-inches: 3'4"  or  3'-4"  or  3 ft 4 in  or  3'4
+    # Feet-inches: 3'4"  or  3'-4"  or  30'6"  or  30 ft 6 in
     ft_in = re.match(
-        r"^(\d+(?:\.\d+)?)\s*['\u2019][\-\s]*(\d+(?:[\/\-]\d+)?(?:\.\d+)?)\s*\"?(?:\s*in)?$",
+        r"^(\d+(?:\.\d+)?)\s*['’][\-\s]*(\d+(?:[\/\-]\d+)?(?:\.\d+)?)\s*"?(?:\s*in)?$",
         t, re.IGNORECASE
     )
     if ft_in:
@@ -224,62 +225,50 @@ def parse_aff(raw):
             feet_part   = float(ft_in.group(1))
             inches_part = _eval_fraction(ft_in.group(2))
             if inches_part is None:
-                return None, "Could not parse inches in: {}".format(raw)
+                return None, "Could not parse inches portion: {}".format(ft_in.group(2))
             total_ft = feet_part + inches_part / 12.0
-            if total_ft <= 0 or total_ft > 12:
-                return None, "AFF out of range (0-144 inches)."
+            if total_ft < 0:
+                return None, "AFF must be positive."
             return total_ft, None
         except Exception:
             pass
 
-    # Explicit feet only: 3'  3ft  3feet  3.0ft
-    ft_only = re.match(
-        r"^(\d+(?:\.\d+)?)\s*(?:'|ft|feet)$", t, re.IGNORECASE
-    )
+    # Explicit feet only: 3'  30'  3ft  30ft  3.5feet
+    ft_only = re.match(r"^(\d+(?:\.\d+)?)\s*(?:'|ft|feet)$", t, re.IGNORECASE)
     if ft_only:
         try:
             feet = float(ft_only.group(1))
-            if feet <= 0 or feet > 12:
-                return None, "AFF out of range (0-12 ft)."
+            if feet < 0:
+                return None, "AFF must be positive."
             return feet, None
         except Exception:
             pass
 
-    # Explicit inches: 36"  48"
+    # Explicit inches: 36"  360"
     inch_only = re.match(r'^(\d+(?:\.\d+)?)"$', t)
     if inch_only:
         try:
             inches = float(inch_only.group(1))
-            if inches <= 0 or inches > 144:
-                return None, "AFF out of range (0-144 inches)."
+            if inches < 0:
+                return None, "AFF must be positive."
             return inches / 12.0, None
         except Exception:
             pass
 
-    # Bare number - ambiguous
+    # Bare number - > 12 is unambiguously inches (36, 48, 360...)
+    # <= 12 is treated as inches too since a bare "3" for AFF almost
+    # certainly means 3 inches, not 3 feet. Use ft/' for feet.
     try:
         val = float(t)
-        # Heuristic: if > 12, almost certainly inches (36, 48...)
-        # if <= 12 and looks like a round number of feet, ask
-        # We just treat > 12 as inches, <= 12 as feet
-        if val <= 0:
+        if val < 0:
             return None, "AFF must be positive."
-        if val > 144:
-            return None, "AFF out of range (max 144 inches / 12 ft)."
-        if val > 12:
-            # clearly inches
-            return val / 12.0, None
-        else:
-            # <= 12: could be feet (3.0) or inches (6, 8, 9...)
-            # Treat as inches since AFF in feet would be unusual input
-            # unless it's a whole number <= 12 - still inches is safer
-            return val / 12.0, None
+        return val / 12.0, None
     except Exception:
         pass
 
     return None, (
         'Could not understand "{}". '
-        'Try: 36  or  36"  or  3\'  or  3\'0"'.format(raw)
+        'Try: 36  or  36"  or  3'  or  3'0"  or  30ft'.format(raw)
     )
 
 
@@ -1001,8 +990,10 @@ def calculate_takeoff_geometry(props, click1, click2, aff_height, stub_dir):
 
     if aff_height >= rise_end.Z:
         raise ValueError(
-            "Drop terminus ({:.0f}\" AFF) is at or above the horizontal run. "
-            "Main pipe is too low or AFF is too high.".format(aff_height * 12.0)
+            "AFF elevation ({:.3f} ft absolute) is at or above the main pipe "
+            "horizontal run ({:.3f} ft). The stub-out endpoint must be below "
+            "the main pipe. Lower the AFF or select a higher main pipe."
+            .format(aff_height, rise_end.Z)
         )
     if horiz_distance < 0.083:
         raise ValueError("Destination point is too close to the main. Pick further away.")
