@@ -60,8 +60,8 @@ from pyrevit import revit, DB, UI, script, forms
 # ============================================================================
 ENVVAR_ACTIVE       = "PIPE_TAKEOFFS_ACTIVE"
 ENVVAR_FIXTURE      = "PIPE_TAKEOFFS_FIXTURE"
-ENVVAR_CUSTOM_SIZE  = "PIPE_TAKEOFFS_CUSTOM_SIZE"
-ENVVAR_CUSTOM_AFF   = "PIPE_TAKEOFFS_CUSTOM_AFF"
+ENVVAR_CUSTOM_SIZE  = "PIPE_TAKEOFFS_CUSTOM_SIZE_RAW"
+ENVVAR_CUSTOM_AFF   = "PIPE_TAKEOFFS_CUSTOM_AFF_RAW"
 
 RISE_HEIGHT       = 0.5
 STUB_LENGTH       = 0.5
@@ -83,33 +83,19 @@ FIXTURES = OrderedDict([
     ('Urinal',            (0.75,  24.0)),
 ])
 
-# Pipe sizes available in custom mode
-PIPE_SIZES = OrderedDict([
-    ('1/4"',   0.25),
-    ('3/8"',   0.375),
-    ('1/2"',   0.5),
-    ('3/4"',   0.75),
-    ('1"',     1.0),
-    ('1-1/4"', 1.25),
-    ('1-1/2"', 1.5),
-    ('2"',     2.0),
-    ('2-1/2"', 2.5),
-    ('3"',     3.0),
-])
-
-# AFF presets available in custom mode
-AFF_PRESETS = OrderedDict([
-    ('12"',  12.0),
-    ('18"',  18.0),
-    ('24"',  24.0),
-    ('30"',  30.0),
-    ('34"',  34.0),
-    ('36"',  36.0),
-    ('42"',  42.0),
-    ('48"',  48.0),
-    ('54"',  54.0),
-    ('60"',  60.0),
-])
+# Valid nominal pipe sizes in inches for custom input parsing
+VALID_PIPE_SIZES = {
+    0.25:  '1/4"',
+    0.375: '3/8"',
+    0.5:   '1/2"',
+    0.75:  '3/4"',
+    1.0:   '1"',
+    1.25:  '1-1/4"',
+    1.5:   '1-1/2"',
+    2.0:   '2"',
+    2.5:   '2-1/2"',
+    3.0:   '3"',
+}
 
 VALID_SYSTEMS = ["CW", "HW", "HWC"]
 
@@ -145,9 +131,9 @@ class FixturePickerDialog(Window):
         self._saved_fixture     = saved_fixture
         self._saved_custom_size = saved_custom_size
         self._saved_custom_aff  = saved_custom_aff
-        self._radio_buttons     = {}
-        self._custom_size_combo = None
-        self._custom_aff_combo  = None
+        self._radio_buttons      = {}
+        self._custom_size_input  = None
+        self._custom_aff_input   = None
         self._build_ui()
 
     def _brush(self, color):
@@ -324,7 +310,7 @@ class FixturePickerDialog(Window):
         return border
 
     def _make_custom_row(self, index):
-        """Build the Custom row with dropdown selectors."""
+        """Build the Custom row with free-text inputs for size and AFF."""
         bg_color = self.CLR_ROW_ALT if index % 2 == 0 else self.CLR_BG
 
         border = Border()
@@ -350,48 +336,34 @@ class FixturePickerDialog(Window):
         Grid.SetColumn(rb, 0)
         grid.Children.Add(rb)
 
-        # Size combo
-        size_cb = ComboBox()
-        size_cb.FontSize  = 11
-        size_cb.IsEnabled = False
-        size_cb.Margin    = Thickness(2, 0, 4, 0)
-        for label in PIPE_SIZES.keys():
-            item = ComboBoxItem()
-            item.Content = label
-            size_cb.Items.Add(item)
-        # Set saved custom size
-        self._set_combo_index(size_cb, self._saved_custom_size, list(PIPE_SIZES.keys()))
-        Grid.SetColumn(size_cb, 1)
-        grid.Children.Add(size_cb)
+        # Size text input
+        size_tb = TextBox()
+        size_tb.FontSize        = 11
+        size_tb.IsEnabled       = False
+        size_tb.Margin          = Thickness(2, 0, 4, 0)
+        size_tb.Padding         = Thickness(3, 1, 3, 1)
+        size_tb.Text            = self._saved_custom_size or '1/2'
+        size_tb.ToolTip         = 'Enter pipe size in inches e.g. 1/2 or 0.5 or 3/4'
+        Grid.SetColumn(size_tb, 1)
+        grid.Children.Add(size_tb)
 
-        # AFF combo
-        aff_cb = ComboBox()
-        aff_cb.FontSize  = 11
-        aff_cb.IsEnabled = False
-        aff_cb.Margin    = Thickness(2, 0, 0, 0)
-        for label in AFF_PRESETS.keys():
-            item = ComboBoxItem()
-            item.Content = label
-            aff_cb.Items.Add(item)
-        # Set saved custom AFF
-        self._set_combo_index(aff_cb, self._saved_custom_aff, list(AFF_PRESETS.keys()))
-        Grid.SetColumn(aff_cb, 2)
-        grid.Children.Add(aff_cb)
+        # AFF text input
+        aff_tb = TextBox()
+        aff_tb.FontSize   = 11
+        aff_tb.IsEnabled  = False
+        aff_tb.Margin     = Thickness(2, 0, 0, 0)
+        aff_tb.Padding    = Thickness(3, 1, 3, 1)
+        aff_tb.Text       = self._saved_custom_aff or '36'
+        aff_tb.ToolTip    = 'Enter AFF height in inches e.g. 36 or 48'
+        Grid.SetColumn(aff_tb, 2)
+        grid.Children.Add(aff_tb)
 
         border.Child = grid
 
         self._radio_buttons['Custom'] = rb
-        self._custom_size_combo = size_cb
-        self._custom_aff_combo  = aff_cb
+        self._custom_size_input = size_tb
+        self._custom_aff_input  = aff_tb
         return border
-
-    def _set_combo_index(self, combo, target_label, labels):
-        """Select the combo item matching target_label."""
-        try:
-            idx = labels.index(target_label)
-            combo.SelectedIndex = idx
-        except (ValueError, Exception):
-            combo.SelectedIndex = 0
 
     def _select_initial(self, saved_fixture):
         """Pre-select the radio button matching saved_fixture."""
@@ -403,44 +375,58 @@ class FixturePickerDialog(Window):
             self._radio_buttons[first].IsChecked = True
 
     def _on_custom_checked(self, sender, args):
-        if self._custom_size_combo:
-            self._custom_size_combo.IsEnabled = True
-        if self._custom_aff_combo:
-            self._custom_aff_combo.IsEnabled = True
+        if self._custom_size_input:
+            self._custom_size_input.IsEnabled = True
+            self._custom_size_input.Focus()
+        if self._custom_aff_input:
+            self._custom_aff_input.IsEnabled = True
 
     def _on_custom_unchecked(self, sender, args):
-        if self._custom_size_combo:
-            self._custom_size_combo.IsEnabled = False
-        if self._custom_aff_combo:
-            self._custom_aff_combo.IsEnabled = False
+        if self._custom_size_input:
+            self._custom_size_input.IsEnabled = False
+        if self._custom_aff_input:
+            self._custom_aff_input.IsEnabled = False
 
     def _on_start(self, sender, args):
         # Find which radio is checked
         for name, rb in self._radio_buttons.items():
             if rb.IsChecked:
                 if name == 'Custom':
-                    # Read combo selections
-                    size_idx = self._custom_size_combo.SelectedIndex
-                    aff_idx  = self._custom_aff_combo.SelectedIndex
+                    # Parse free-text inputs tolerantly
+                    size_raw = (self._custom_size_input.Text or '').strip()
+                    aff_raw  = (self._custom_aff_input.Text  or '').strip()
 
-                    size_keys = list(PIPE_SIZES.keys())
-                    aff_keys  = list(AFF_PRESETS.keys())
+                    dia_ft = self._parse_size(size_raw)
+                    if dia_ft is None:
+                        forms.alert(
+                            'Could not read pipe size "{}".\n\n'
+                            'Enter a decimal or fraction, e.g. 1/2 or 0.75 or 1-1/2'
+                            .format(size_raw),
+                            title='Invalid Pipe Size'
+                        )
+                        return
 
-                    if size_idx < 0 or size_idx >= len(size_keys):
-                        size_idx = 2  # default 1/2"
-                    if aff_idx < 0 or aff_idx >= len(aff_keys):
-                        aff_idx = 5  # default 36"
+                    aff_ft = self._parse_aff(aff_raw)
+                    if aff_ft is None:
+                        forms.alert(
+                            'Could not read AFF height "{}".\n\n'
+                            'Enter a number in inches, e.g. 36 or 48'
+                            .format(aff_raw),
+                            title='Invalid AFF Height'
+                        )
+                        return
 
-                    size_label = size_keys[size_idx]
-                    aff_label  = aff_keys[aff_idx]
+                    dia_in  = dia_ft * 12.0
+                    aff_in  = aff_ft * 12.0
+                    size_label = VALID_PIPE_SIZES.get(round(dia_in, 4), '{}"'.format(dia_in))
 
-                    self.result_fixture = 'Custom ({}, {} AFF)'.format(size_label, aff_label)
-                    self.result_dia_ft  = PIPE_SIZES[size_label] / 12.0
-                    self.result_aff_ft  = AFF_PRESETS[aff_label] / 12.0
+                    self.result_fixture = 'Custom ({}, {}" AFF)'.format(size_label, int(round(aff_in)))
+                    self.result_dia_ft  = dia_ft
+                    self.result_aff_ft  = aff_ft
 
-                    # Persist custom values
-                    script.set_envvar(ENVVAR_CUSTOM_SIZE, size_label)
-                    script.set_envvar(ENVVAR_CUSTOM_AFF,  aff_label)
+                    # Persist raw text for next session
+                    script.set_envvar(ENVVAR_CUSTOM_SIZE, size_raw)
+                    script.set_envvar(ENVVAR_CUSTOM_AFF,  aff_raw)
                 else:
                     dia_in, aff_in      = FIXTURES[name]
                     self.result_fixture = name
@@ -452,6 +438,61 @@ class FixturePickerDialog(Window):
                 return
 
         forms.alert("Please select a fixture.", title="No Selection")
+
+    def _parse_size(self, text):
+        """Parse a pipe size string entered by the user. Returns decimal inches or None.
+
+        Accepts: 1/2  0.5  1-1/2  1.5  3/4  2  etc.
+        Strips inch symbols and whitespace before parsing.
+        """
+        t = text.replace('"', '').replace("'", '').strip()
+        if not t:
+            return None
+        # Handle mixed number like 1-1/2
+        try:
+            if '-' in t:
+                parts = t.split('-', 1)
+                whole = float(parts[0].strip())
+                frac  = self._eval_fraction(parts[1].strip())
+                if frac is None:
+                    return None
+                inches = whole + frac
+            elif '/' in t:
+                inches = self._eval_fraction(t)
+            else:
+                inches = float(t)
+            if inches is None or inches <= 0 or inches > 12:
+                return None
+            return inches / 12.0
+        except Exception:
+            return None
+
+    def _eval_fraction(self, text):
+        """Evaluate a simple fraction string like 1/2. Returns float or None."""
+        try:
+            parts = text.split('/')
+            if len(parts) == 2:
+                return float(parts[0]) / float(parts[1])
+            return float(text)
+        except Exception:
+            return None
+
+    def _parse_aff(self, text):
+        """Parse an AFF height string entered by the user. Returns feet or None.
+
+        Accepts: 36  36"  48  18.5  etc.
+        Strips inch symbols and whitespace.
+        """
+        t = text.replace('"', '').replace("'", '').strip()
+        if not t:
+            return None
+        try:
+            inches = float(t)
+            if inches <= 0 or inches > 144:
+                return None
+            return inches / 12.0
+        except Exception:
+            return None
 
     def show(self):
         """Show dialog. Returns (fixture_label, dia_ft, aff_ft) or None."""
