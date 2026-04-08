@@ -97,7 +97,7 @@ VALID_PIPE_SIZES = {
     3.0:   '3"',
 }
 
-VALID_SYSTEMS = ["CW", "HW", "HWC"]
+VALID_SYSTEMS = ["CW", "HW", "HWC", "NG"]
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -940,7 +940,7 @@ def main():
                 ref = uidoc.Selection.PickObject(
                     ObjectType.Element,
                     pipe_filter,
-                    "Pick CW/HW/HWC main pipe  |  {}  (ESC to exit)"
+                    "Pick CW/HW/HWC/NG main pipe  |  {}  (ESC to exit)"
                     .format(fixture_name)
                 )
                 main_pipe = doc.GetElement(ref.ElementId)
