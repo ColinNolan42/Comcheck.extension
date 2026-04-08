@@ -97,7 +97,7 @@ VALID_PIPE_SIZES = {
     3.0:   '3"',
 }
 
-VALID_SYSTEMS = ["CW", "HW", "HWC", "NG"]
+VALID_SYSTEMS = ["CW", "HW", "HWC", "NG", "NATURAL GAS"]
 
 doc    = revit.doc
 uidoc  = revit.uidoc
