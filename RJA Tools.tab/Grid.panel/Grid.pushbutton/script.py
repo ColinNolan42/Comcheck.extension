@@ -393,7 +393,7 @@ def bubbles_still_colliding(entry, all_entries, threshold):
     return False
 
 
-def choose_entry_to_move(entry_a, entry_b):
+def choose_entry_to_move(entry_a, entry_b, view):
     """Lowest alphanumeric name moves."""
     if entry_is_lower_name(entry_a, entry_b):
         return entry_a
