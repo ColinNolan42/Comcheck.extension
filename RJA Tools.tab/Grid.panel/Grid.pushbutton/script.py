@@ -514,37 +514,70 @@ def main():
 
         for view in views:
             try:
-                threshold    = collision_threshold(view, bubble_diam_ft)
-                # Nudge step = one full bubble diameter in model space
-                bubble_step  = threshold
-                done_keys    = set()
+                threshold   = collision_threshold(view, bubble_diam_ft)
+                bubble_step = threshold  # nudge step = one bubble diameter
+                done_keys   = set()
+                MAX_OUTER   = 20  # safety cap on outer loop
 
-                entries = collect_bubble_entries(doc, view)
-                if len(entries) < 2:
-                    views_processed += 1
-                    continue
+                for outer_pass in range(MAX_OUTER):
 
-                pairs = find_colliding_pairs(entries, threshold)
-                if not pairs:
-                    views_processed += 1
-                    continue
+                    # Re-collect entries each outer pass so positions
+                    # reflect any nudges made in previous passes
+                    entries = collect_bubble_entries(doc, view)
+                    if len(entries) < 2:
+                        break
 
-                for a, b in pairs:
-                    target = choose_entry_to_move(a, b)
-                    key = (target['grid_id'], target['end_index'])
-                    if key in done_keys:
-                        continue
-                    try:
-                        if nudge_bubble_clear(target, entries, view,
-                                              threshold, bubble_step,
-                                              done_keys):
-                            total_leaders += 1
-                    except Exception as ex:
-                        per_view_errors.append((
-                            view.Name,
-                            "Grid {}: {}".format(target['grid_id'], ex),
-                        ))
-                        logger.debug(traceback.format_exc())
+                    pairs = find_colliding_pairs(entries, threshold)
+                    if not pairs:
+                        break  # all clear
+
+                    # Build the set of unique entries that need to move.
+                    # For each colliding pair, choose_entry_to_move picks
+                    # the one further in the nudge direction (lower X for
+                    # vertical, lower Y for horizontal).
+                    # Collect unique targets, skipping already-done ones.
+                    targets_this_pass = {}  # key -> entry
+                    for a, b in pairs:
+                        target = choose_entry_to_move(a, b, view)
+                        key = (target['grid_id'], target['end_index'])
+                        if key not in done_keys:
+                            targets_this_pass[key] = target
+
+                    if not targets_this_pass:
+                        break  # nothing new to do
+
+                    # Sort targets so the outermost bubble moves first.
+                    # Vertical: sort by X ascending  (leftmost moves first)
+                    # Horizontal: sort by Y ascending (lowest moves first)
+                    # This ensures the bubble with the most room to move
+                    # goes first, preventing it from landing on another.
+                    target_list = list(targets_this_pass.values())
+                    if target_list and target_list[0]['is_vertical']:
+                        target_list.sort(key=lambda e: e['x'])
+                    else:
+                        target_list.sort(key=lambda e: e['y'])
+
+                    new_this_pass = 0
+                    for target in target_list:
+                        key = (target['grid_id'], target['end_index'])
+                        if key in done_keys:
+                            continue
+                        try:
+                            if nudge_bubble_clear(target, entries, view,
+                                                  threshold, bubble_step,
+                                                  done_keys):
+                                total_leaders += 1
+                                new_this_pass += 1
+                        except Exception as ex:
+                            per_view_errors.append((
+                                view.Name,
+                                "Grid {}: {}".format(
+                                    target['grid_id'], ex),
+                            ))
+                            logger.debug(traceback.format_exc())
+
+                    if new_this_pass == 0:
+                        break  # no progress — exit
 
                 views_processed += 1
 
