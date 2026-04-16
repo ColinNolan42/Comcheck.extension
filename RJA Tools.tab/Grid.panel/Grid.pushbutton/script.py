@@ -1,42 +1,45 @@
 # -*- coding: utf-8 -*-
 """Separates colliding grid bubbles on plan views placed on sheets.
 
-Correct leader geometry (proven by diagnostic):
-  Revit's AddLeader places Anchor, Elbow, and End automatically in a
-  valid default position on the grid axis. The only valid modification
-  is to extend both End AND Elbow further along the grid axis together.
-  Moving End alone fails. Moving perpendicular fails.
+Offset direction — based purely on bubble position in the view, NO name parsing:
 
-  Strategy:
-    1. Call AddLeader (or skip if leader already exists)
-    2. Read the default Anchor, Elbow, End from GetLeader
-    3. Compute the grid axis unit vector from the curve
-    4. Extend End by the offset distance along the axis
-    5. Extend Elbow by half the offset distance along the axis
-       (keeps Elbow between Anchor and End)
-    6. Call SetLeader with the updated positions
+  The script looks at WHERE the bubble physically sits relative to the
+  view's crop box center:
 
-  This is the exact pattern that matches what Revit does manually
-  when you drag the elbow/break handle on a grid bubble.
+  Bubble is at the BOTTOM of the view  (Y < view center Y):
+    -> shift RIGHT (+X). Clears by moving further right along the page.
 
-Host grids only:
-  Linked grids are excluded from collision detection entirely.
-  They cannot have leaders added and were causing 25 false skips.
+  Bubble is on the SIDE of the view (LEFT or RIGHT)
+  (Y is near center, X is near left or right edge):
+    -> shift UP (+Y). Clears by moving further up along the page.
 
-Idempotent:
-  Grids that already have a leader get their leader repositioned
-  via SetLeader only — AddLeader is not called again.
+  This works regardless of whether architects put numbers or letters
+  on the bottom, side, or any combination. No grid names are read.
+  The decision is made purely from the bubble's XY position vs the
+  view crop box center.
 
-Scope:
-  FloorPlan, CeilingPlan, AreaPlan, EngineeringPlan on sheets only.
+  "Higher" grid in a collision = whichever bubble is further in the
+  offset direction already. That one moves further in that direction.
+  If tied, the one with the higher ElementId moves (deterministic).
+
+Default offset: 4'-0" in model space (Revit internal decimal feet).
+
+Leader geometry (proven by diagnostic):
+  1. AddLeader if no leader exists, else reuse existing
+  2. Read default Anchor/Elbow/End
+  3. Extend End by full offset in the chosen direction
+  4. Extend Elbow by half offset in the same direction
+  5. SetLeader
+
+Host grids only. Linked grids excluded.
+FloorPlan, CeilingPlan, AreaPlan, EngineeringPlan on sheets only.
 """
 
 __title__   = "Separate\nGrid Bubbles"
 __author__  = "MEP Tools"
-__version__ = "9.0.0"
-__doc__     = ("Pick a grid, then separates all colliding grid bubbles on "
-               "plan views on sheets using the leader elbow feature. "
-               "Host grids only. Grid lines are never moved.")
+__version__ = "10.0.0"
+__doc__     = ("Separates colliding grid bubbles. Bottom bubbles shift right, "
+               "side bubbles shift up. Based on bubble position, not grid name.")
 
 # -----------------------------------------------------------------------------
 # Imports
@@ -75,13 +78,107 @@ PLAN_VIEW_TYPES = {
     ViewType.EngineeringPlan,
 }
 
-DEFAULT_BUBBLE_DIAMETER_INCHES = 0.375   # 3/8" standard Revit grid head
-OFFSET_MULTIPLIER              = 1.25    # 1x clears + 0.25x visible gap
-MIN_GRID_LENGTH_FT             = 0.01
+# Offset in Revit internal units (decimal feet) — 4'-0"
+DEFAULT_OFFSET_FT = 4.0
+
+# Fallback bubble diameter for collision threshold (inches)
+DEFAULT_BUBBLE_DIAMETER_INCHES = 0.375
+
+MIN_GRID_LENGTH_FT = 0.01
 
 
 # =============================================================================
-# Pick a grid — calibrate bubble size
+# View crop box center — used to determine bubble position on page
+# =============================================================================
+def get_view_center(view):
+    """Return the XY center of the view's crop box in model coordinates.
+
+    This is the reference point for deciding if a bubble is at the
+    bottom (Y < center.Y) or on the side (Y near center.Y).
+
+    Falls back to the view's origin if crop box is unavailable.
+    """
+    try:
+        if view.CropBoxActive and view.CropBox is not None:
+            bb = view.CropBox
+            cx = (bb.Min.X + bb.Max.X) * 0.5
+            cy = (bb.Min.Y + bb.Max.Y) * 0.5
+            cz = (bb.Min.Z + bb.Max.Z) * 0.5
+            return XYZ(cx, cy, cz)
+    except Exception:
+        pass
+    try:
+        return view.Origin
+    except Exception:
+        return XYZ(0, 0, 0)
+
+
+def get_view_bounds(view):
+    """Return (min_x, max_x, min_y, max_y) of the view crop box.
+
+    Used to determine what fraction of the view height a bubble sits at.
+    """
+    try:
+        if view.CropBoxActive and view.CropBox is not None:
+            bb = view.CropBox
+            return bb.Min.X, bb.Max.X, bb.Min.Y, bb.Max.Y
+    except Exception:
+        pass
+    return None, None, None, None
+
+
+# =============================================================================
+# Bubble position classifier — bottom vs side
+# =============================================================================
+def get_bubble_offset_direction(entry, view):
+    """Return the XYZ direction the bubble should move to separate.
+
+    Logic — purely positional, no name parsing:
+
+    1. Get the view crop box bounds.
+    2. Compute what fraction of the view height the bubble sits at:
+         frac_y = (bubble.Y - min_y) / (max_y - min_y)
+    3. If frac_y < 0.35 -> bubble is in the bottom 35% -> shift RIGHT (+X)
+       If frac_y > 0.65 -> bubble is in the top 35% -> shift RIGHT (+X)
+         (top bubbles also shift right — same axis as bottom)
+       Otherwise (frac_y between 0.35 and 0.65) -> bubble is on a side
+         -> shift UP (+Y)
+
+    Why top and bottom both shift right:
+      Vertical gridlines have bubbles at top AND bottom. Both ends of
+      a vertical grid should shift the same direction (right) so the
+      grid doesn't twist.
+
+    Why side bubbles shift up:
+      Horizontal gridlines have bubbles on the left or right side.
+      Shifting up separates them cleanly without crossing other grids.
+    """
+    min_x, max_x, min_y, max_y = get_view_bounds(view)
+
+    # Fallback if crop box unavailable — use grid orientation from curve
+    if min_y is None or max_y is None or (max_y - min_y) < 0.01:
+        # Fall back to grid direction: vertical grid -> right, horizontal -> up
+        if entry['is_vertical']:
+            return XYZ(1.0, 0.0, 0.0)
+        else:
+            return XYZ(0.0, 1.0, 0.0)
+
+    bub_y = entry['y']
+    height = max_y - min_y
+    frac_y = (bub_y - min_y) / height
+
+    if frac_y < 0.35 or frac_y > 0.65:
+        # Bubble is near top or bottom of view — this is a vertical grid
+        # Shift RIGHT (+X)
+        return XYZ(1.0, 0.0, 0.0)
+    else:
+        # Bubble is on the left or right side — this is a horizontal grid
+        # Shift UP (+Y)
+        return XYZ(0.0, 1.0, 0.0)
+
+
+# =============================================================================
+# Pick a grid — calibrate bubble size for collision threshold
 # =============================================================================
 def pick_reference_grid():
     try:
@@ -94,8 +191,8 @@ def pick_reference_grid():
                 return False
 
         forms.alert(
-            "Click any grid line to calibrate bubble size.\n"
-            "The script will then process all plan views on sheets.",
+            "Click any grid line to calibrate bubble size for collision "
+            "detection.\nThe script will then process all plan views on sheets.",
             title="Separate Grid Bubbles — Pick a Grid",
             ok=True,
         )
@@ -142,9 +239,10 @@ def read_bubble_diameter_inches(grid):
 
 
 # =============================================================================
-# Scale helpers
+# Scale helpers — collision threshold only
 # =============================================================================
 def bubble_diameter_model_units(view, bubble_inches):
+    """Bubble diameter in model feet at view scale — for collision threshold."""
     try:
         scale = float(view.Scale)
         if scale <= 0:
@@ -219,18 +317,10 @@ def grid_has_leader_at_end(grid, view, end_index):
 # Entry collection — HOST GRIDS ONLY, pure 2D
 # =============================================================================
 def collect_bubble_entries(document, view):
-    """One deduplicated entry per visible bubble on host grids only.
-
-    Linked grids excluded entirely — they cannot have leaders added and
-    were causing false skips in collision pairing.
-
-    Stores the outward axis unit vector (out_x, out_y) for each entry
-    so the leader extension direction is pre-computed from the real curve.
-    """
+    """One deduplicated entry per visible bubble on host grids only."""
     entries = []
     seen_keys = set()
 
-    # HOST GRIDS ONLY — no linked model lookup
     try:
         host_grids = (FilteredElementCollector(document, view.Id)
                       .OfClass(Grid).ToElements())
@@ -250,9 +340,8 @@ def collect_bubble_entries(document, view):
         if length_2d < MIN_GRID_LENGTH_FT:
             continue
 
-        # Unit vector along the grid axis from End0 to End1
-        ux = dx / length_2d
-        uy = dy / length_2d
+        # Classify orientation from actual curve geometry
+        is_vertical = abs(dy) >= abs(dx)
 
         for end_index in (0, 1):
             if not grid_has_bubble_at_end(g, view, end_index):
@@ -264,22 +353,14 @@ def collect_bubble_entries(document, view):
             seen_keys.add(key)
 
             pt = curve.GetEndPoint(end_index)
-
-            # Outward direction: away from the fixed end toward this bubble end
-            if end_index == 1:
-                out_x, out_y = ux, uy     # End0 -> End1 direction
-            else:
-                out_x, out_y = -ux, -uy   # End1 -> End0 direction
-
             entries.append({
-                'grid':      g,
-                'grid_id':   g.Id.IntegerValue,
-                'end_index': end_index,
-                'x':         pt.X,        # 2D only — Z stripped
-                'y':         pt.Y,
-                'z':         pt.Z,        # kept for Z-clamping only
-                'out_x':     out_x,       # axis direction outward
-                'out_y':     out_y,
+                'grid':        g,
+                'grid_id':     g.Id.IntegerValue,
+                'end_index':   end_index,
+                'x':           pt.X,
+                'y':           pt.Y,
+                'z':           pt.Z,
+                'is_vertical': is_vertical,
             })
 
     return entries
@@ -289,7 +370,7 @@ def collect_bubble_entries(document, view):
 # Collision detection — pure 2D, deduplicated by grid pair
 # =============================================================================
 def find_colliding_pairs(entries, threshold):
-    """(entry_a, entry_b) pairs within threshold feet. Pure 2D. One per pair."""
+    """(entry_a, entry_b) pairs within threshold. Pure 2D. One per grid pair."""
     pairs = []
     seen_pairs = set()
     n = len(entries)
@@ -314,68 +395,87 @@ def find_colliding_pairs(entries, threshold):
     return pairs
 
 
-def choose_entry_to_move(entry_a, entry_b):
-    """Move the entry with the higher grid_id — deterministic."""
+def choose_entry_to_move(entry_a, entry_b, view):
+    """Choose which bubble to move based on its position in the view.
+
+    For vertical grids (bottom/top bubbles, shift right):
+      Move the bubble that is further LEFT (lower X) — it needs to go
+      right to clear its neighbour which is already to the right.
+      If tied, higher grid_id moves.
+
+    For horizontal grids (side bubbles, shift up):
+      Move the bubble that is further DOWN (lower Y) — it needs to go
+      up to clear its neighbour which is already higher.
+      If tied, higher grid_id moves.
+
+    This ensures consistent movement: always toward the standard direction,
+    never away from it.
+    """
+    # Use entry_a's classification (both should be same orientation)
+    is_vertical = entry_a['is_vertical']
+
+    if is_vertical:
+        # Move the one further left (it shifts right to clear)
+        if abs(entry_a['x'] - entry_b['x']) > 0.001:
+            return entry_a if entry_a['x'] < entry_b['x'] else entry_b
+    else:
+        # Move the one further down (it shifts up to clear)
+        if abs(entry_a['y'] - entry_b['y']) > 0.001:
+            return entry_a if entry_a['y'] < entry_b['y'] else entry_b
+
+    # Tied position — higher grid_id moves (deterministic)
     return entry_a if entry_a['grid_id'] > entry_b['grid_id'] else entry_b
 
 
 # =============================================================================
-# Leader application — extend default geometry along axis
+# Leader application
 # =============================================================================
-def apply_leader(target_entry, view, offset_distance, already_done_keys):
-    """Add or reposition a leader on the target grid's bubble end.
+def apply_leader(target_entry, view, already_done_keys):
+    """Add or reposition a leader to move the bubble in the correct direction.
 
-    Proven correct geometry (from diagnostic):
-      - Call AddLeader to get Revit's valid default Anchor/Elbow/End
-      - Read back the default leader with GetLeader
-      - Extend End by offset_distance along the grid axis
-      - Extend Elbow by offset_distance * 0.5 along the grid axis
-        (this keeps Elbow between Anchor and End — required by Revit)
-      - Write back with SetLeader
+    Offset direction is determined by bubble position in view:
+      Bottom/top of view -> RIGHT (+X)
+      Left/right of view -> UP (+Y)
 
-    If the grid already has a leader (from a previous run), skip
-    AddLeader and go straight to repositioning via SetLeader.
+    Leader extension:
+      End   moves full DEFAULT_OFFSET_FT in the offset direction
+      Elbow moves half DEFAULT_OFFSET_FT (stays between Anchor and End)
 
-    Returns True if leader was added/updated, False if skipped.
+    Returns True if applied, False if skipped.
     """
     grid      = target_entry['grid']
     end_index = target_entry['end_index']
     datum_end = DatumEnds.End0 if end_index == 0 else DatumEnds.End1
+    z         = target_entry['z']
 
     key = (target_entry['grid_id'], end_index)
     if key in already_done_keys:
         return False
 
-    # Axis direction for this bubble end (pre-computed, 2D)
-    out_x = target_entry['out_x']
-    out_y = target_entry['out_y']
-    z     = target_entry['z']
+    # Determine offset direction from bubble's position in this view
+    offset_dir = get_bubble_offset_direction(target_entry, view)
 
     has_leader = grid_has_leader_at_end(grid, view, end_index)
-
     if not has_leader:
-        # AddLeader creates valid default Anchor/Elbow/End on the axis
         grid.AddLeader(datum_end, view)
 
-    # Read the current leader (default after AddLeader, or existing)
     leader = grid.GetLeader(datum_end, view)
     if leader is None:
         raise Exception("GetLeader returned None")
 
-    # Extend End and Elbow further along the axis.
-    # Both must move together — moving End alone fails Revit validation.
-    # Elbow moves half as far to stay between Anchor and End.
     current_end   = leader.End
     current_elbow = leader.Elbow
 
+    # Extend End and Elbow in the offset direction
+    # Both must move together — Revit requires Elbow between Anchor and End
     new_end = XYZ(
-        current_end.X   + out_x * offset_distance,
-        current_end.Y   + out_y * offset_distance,
+        current_end.X   + offset_dir.X * DEFAULT_OFFSET_FT,
+        current_end.Y   + offset_dir.Y * DEFAULT_OFFSET_FT,
         z,
     )
     new_elbow = XYZ(
-        current_elbow.X + out_x * (offset_distance * 0.5),
-        current_elbow.Y + out_y * (offset_distance * 0.5),
+        current_elbow.X + offset_dir.X * (DEFAULT_OFFSET_FT * 0.5),
+        current_elbow.Y + offset_dir.Y * (DEFAULT_OFFSET_FT * 0.5),
         z,
     )
 
@@ -408,6 +508,7 @@ def main():
     output.print_md("## Grid Bubble Separation")
     output.print_md("Reference grid: **{}** (ID {})".format(
         ref_grid.Name, ref_grid.Id.IntegerValue))
+    output.print_md("Offset distance: **{} ft**".format(DEFAULT_OFFSET_FT))
 
     bubble_inches = read_bubble_diameter_inches(ref_grid)
 
@@ -432,9 +533,7 @@ def main():
 
         for view in views:
             try:
-                bubble_diam_model = bubble_diameter_model_units(
-                    view, bubble_inches)
-                threshold = bubble_diam_model
+                threshold = bubble_diameter_model_units(view, bubble_inches)
 
                 entries = collect_bubble_entries(doc, view)
                 if len(entries) < 2:
@@ -446,10 +545,9 @@ def main():
 
                 done_keys = set()
                 for a, b in pairs:
-                    target = choose_entry_to_move(a, b)
+                    target = choose_entry_to_move(a, b, view)
                     try:
-                        if apply_leader(target, view,
-                                        bubble_diam_model, done_keys):
+                        if apply_leader(target, view, done_keys):
                             leaders_added += 1
                     except Exception as ex:
                         per_view_errors.append((
