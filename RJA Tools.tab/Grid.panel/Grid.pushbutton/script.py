@@ -21,12 +21,14 @@ Movement rules — consistent, no hardcoded names:
   Bubble position (bottom vs side) is determined from the bubble's Y
   position relative to the view crop box — no grid name parsing.
 
-Default bubble diameter for collision threshold: 4'-0" model space.
-  This scales with view.Scale so collision detection is correct at any
-  sheet scale. It is NOT the leader offset distance.
+Default bubble diameter for collision threshold: 1/2" paper space.
+  Stored as 0.04167 ft (0.5"/12). Multiplied by view.Scale to get the
+  model-space collision distance. At 1/8" scale this equals 4'-0" in
+  model space — matching the visual bubble size on the sheet.
+  It is NOT the leader offset distance.
 
-Leader offset: also 4'-0" — the distance the bubble End point moves
-  from the default AddLeader position along the offset direction.
+Leader offset: 4'-0" model space — the distance the bubble End point
+  moves from the default AddLeader position along the offset direction.
 
 Leader geometry (proven correct by diagnostic):
   1. AddLeader if no leader exists, else reuse existing
@@ -44,7 +46,7 @@ __author__  = "MEP Tools"
 __version__ = "11.0.0"
 __doc__     = ("Separates colliding grid bubbles. Lowest-named grid moves: "
                "bottom bubbles shift right, side bubbles shift down. "
-               "4ft default bubble diameter and offset.")
+               "Default bubble diameter 1/2\", leader offset 4ft.")
 
 # -----------------------------------------------------------------------------
 # Imports
@@ -84,9 +86,11 @@ PLAN_VIEW_TYPES = {
     ViewType.EngineeringPlan,
 }
 
-# Default collision threshold diameter — 4'-0" in model space at 1:1.
-# Multiplied by view.Scale to convert to model units per view.
-DEFAULT_BUBBLE_DIAMETER_FT = 4.0
+# Default collision threshold diameter — 1/2" bubble in PAPER space.
+# Stored as decimal feet: 0.5 inches / 12 = 0.04167 ft.
+# Multiplied by view.Scale in collision_threshold() to convert to model
+# space. At 1/8" scale (Scale=96): 0.04167 * 96 = 4.0 ft in model space.
+DEFAULT_BUBBLE_DIAMETER_FT = 0.5 / 12.0   # 1/2" in decimal feet
 
 # Leader offset — how far the bubble End moves from default AddLeader position.
 LEADER_OFFSET_FT = 4.0
@@ -218,7 +222,7 @@ def read_bubble_diameter_ft(grid):
         logger.debug("read_bubble_diameter_ft: {}".format(ex))
 
     output.print_md("Using default bubble diameter: "
-                    "**{} ft**".format(DEFAULT_BUBBLE_DIAMETER_FT))
+                    "**1/2 in ({:.5f} ft)**".format(DEFAULT_BUBBLE_DIAMETER_FT))
     return DEFAULT_BUBBLE_DIAMETER_FT
 
 
