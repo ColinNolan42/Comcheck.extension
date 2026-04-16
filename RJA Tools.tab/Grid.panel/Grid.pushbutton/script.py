@@ -14,15 +14,23 @@ Collision detection:
   - Offset distance is also computed from view scale (1.5x bubble diameter)
     so bubbles land clearly clear of each other at any sheet scale.
 
-Curve strategy (fixes zero-collision bug):
+Curve strategy:
   - GetCurvesInView(ViewSpecific) is tried first.
   - If it returns nothing (grid has never been manually adjusted in that view,
     which is the default state for most grids), falls back to
-    GetCurvesInView(Model).
-  - This was the root cause of the previously reported zero-collision result.
+    GetCurvesInView(Model) to read the position.
+  - Before writing back, the grid is promoted to ViewSpecific extents using
+    SetDatumExtentType() on both ends so SetCurveInView() (singular — the
+    correct IronPython API method name) does not throw.
+
+Key API corrections vs previous versions:
+  - SetCurvesInView (plural, wrong) -> SetCurveInView (singular, correct)
+  - GetCurvesInView (plural) is correct for reading — returns IList
+  - SetDatumExtentType must be called before SetCurveInView when the grid
+    has not yet been given a ViewSpecific override in that view.
 
 Other behaviour:
-  - Only view-specific 2D extents are written back — model geometry untouched.
+  - Only view-specific 2D extents are written — model geometry untouched.
   - For each colliding pair the grid with the higher ElementId is moved so
     the operation is deterministic across repeated runs.
   - Single Transaction wraps everything — one Ctrl+Z undoes the whole run.
@@ -30,10 +38,9 @@ Other behaviour:
 
 __title__   = "Separate\nGrid Bubbles"
 __author__  = "MEP Tools"
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 __doc__     = ("Automatically separates colliding grid bubbles on all plan "
-               "views placed on sheets. No user input required — threshold "
-               "and offset are calculated from each view's print scale.")
+               "views placed on sheets. No user input required.")
 
 # -----------------------------------------------------------------------------
 # Imports
@@ -52,9 +59,6 @@ from Autodesk.Revit.DB import (
     DatumEnds,
 )
 
-from System.Collections.Generic import List
-from Autodesk.Revit.DB import Curve as RvtCurve
-
 from pyrevit import forms, script, revit
 
 # -----------------------------------------------------------------------------
@@ -66,7 +70,6 @@ output = script.get_output()
 
 # -----------------------------------------------------------------------------
 # View-type filter — top-down plan views only
-# Sections, elevations, details, and 3D views are intentionally excluded.
 # -----------------------------------------------------------------------------
 PLAN_VIEW_TYPES = {
     ViewType.FloorPlan,
@@ -77,43 +80,32 @@ PLAN_VIEW_TYPES = {
 
 # -----------------------------------------------------------------------------
 # Scale constants
-# Revit grid bubble = 3/8" diameter at plot scale (standard annotation circle).
-# Offset multiplier: 1.5x bubble diameter gives clear daylight between bubbles
-# after separation at any sheet scale.
+# Revit grid bubble = 3/8" diameter at plot scale.
+# Offset = 1.5x bubble diameter so separated bubbles have clear daylight.
 # -----------------------------------------------------------------------------
-BUBBLE_DIAMETER_INCHES = 0.375   # 3/8" standard Revit grid head circle
-OFFSET_MULTIPLIER      = 1.5     # offset = 1.5 × bubble diameter
+BUBBLE_DIAMETER_INCHES = 0.375
+OFFSET_MULTIPLIER      = 1.5
 
 
 # =============================================================================
 # Scale helpers
 # =============================================================================
 def bubble_diameter_model_units(view):
-    """Return the bubble diameter in Revit internal units (decimal feet).
+    """Bubble diameter in Revit internal feet, scaled to this view's print scale.
 
-    Revit internal units are decimal feet. view.Scale is the ratio such that
-    1 paper inch = Scale model inches (e.g. Scale=96 means 1/8"=1'-0").
-
-        model diameter = (BUBBLE_DIAMETER_INCHES / 12) × view.Scale
-
-    Examples:
-        1/8"=1'-0"  Scale=96   -> 3.0 ft in model space
-        1/4"=1'-0"  Scale=48   -> 1.5 ft in model space
-        1"=1'-0"    Scale=12   -> 0.375 ft in model space
+    model diameter = (0.375 inches / 12) x view.Scale
+    e.g. Scale=96 (1/8"=1'-0") -> 3.0 ft in model space
+         Scale=48 (1/4"=1'-0") -> 1.5 ft in model space
     """
     try:
         scale = float(view.Scale)
     except Exception:
-        scale = 96.0  # safe default — 1/8" scale
+        scale = 96.0
     return (BUBBLE_DIAMETER_INCHES / 12.0) * scale
 
 
 def offset_distance_model_units(view):
-    """Return the perpendicular offset distance in model feet.
-
-    Set to OFFSET_MULTIPLIER × bubble_diameter so separated bubbles have
-    clear visible space between them after the move.
-    """
+    """Offset distance in model feet = OFFSET_MULTIPLIER x bubble diameter."""
     return OFFSET_MULTIPLIER * bubble_diameter_model_units(view)
 
 
@@ -121,11 +113,7 @@ def offset_distance_model_units(view):
 # View collection — plans on sheets only
 # =============================================================================
 def get_sheet_view_ids(document):
-    """Return a set of ElementId integer values for every view placed on a sheet.
-
-    Iterates all ViewSheet elements and calls GetAllPlacedViews() on each,
-    which returns the ElementIds of the views in all viewports on that sheet.
-    """
+    """Return set of ElementId integer values for every view placed on a sheet."""
     placed_ids = set()
     sheets = FilteredElementCollector(document).OfClass(ViewSheet).ToElements()
     for sheet in sheets:
@@ -133,17 +121,12 @@ def get_sheet_view_ids(document):
             for vid in sheet.GetAllPlacedViews():
                 placed_ids.add(vid.IntegerValue)
         except Exception as ex:
-            logger.debug("Could not read sheet {}: {}".format(sheet.Name, ex))
+            logger.debug("Sheet {}: {}".format(sheet.Name, ex))
     return placed_ids
 
 
 def collect_plan_views_on_sheets(document):
-    """Return all non-template plan views that are placed on at least one sheet.
-
-    Filters to FloorPlan, CeilingPlan, AreaPlan, EngineeringPlan only.
-    Views not placed on any sheet are excluded — they would never be printed
-    and separating bubbles on them would be wasted work.
-    """
+    """Return all non-template plan views placed on at least one sheet."""
     sheet_view_ids = get_sheet_view_ids(document)
     result = []
     for v in FilteredElementCollector(document).OfClass(View):
@@ -161,41 +144,31 @@ def collect_plan_views_on_sheets(document):
 # Grid curve retrieval — ViewSpecific with Model fallback
 # =============================================================================
 def get_grid_curve_in_view(grid, view):
-    """Return (curve, extent_type) for a grid in a view, or (None, None).
+    """Return the first available curve for a grid in a view, or None.
 
-    ROOT CAUSE FIX for the zero-collision bug:
-    GetCurvesInView(DatumExtentType.ViewSpecific, view) returns an empty list
-    for any grid whose 2D extents have never been manually adjusted in that
-    view — which is the default state for virtually every grid in a new model.
-    The previous version only tried ViewSpecific and silently skipped all
-    those grids, resulting in zero entries and zero collisions detected.
-
-    Fix: fall back to DatumExtentType.Model when ViewSpecific is empty.
-    The Model curve is always present if the grid is visible in the view.
-    We still write back as ViewSpecific so we only move the annotation in
-    this view — the model grid line is never altered.
+    Tries ViewSpecific first (2D override). Falls back to Model if the grid
+    has never been manually adjusted in this view (the default state).
     """
     for extent_type in (DatumExtentType.ViewSpecific, DatumExtentType.Model):
         try:
             curves = grid.GetCurvesInView(extent_type, view)
             if curves:
-                return curves[0], extent_type
+                return curves[0]
         except Exception:
             continue
-    return None, None
+    return None
 
 
 # =============================================================================
 # Bubble visibility
 # =============================================================================
 def grid_has_bubble_at_end(grid, view, end_index):
-    """Return True if the bubble at end_index (0=start, 1=end) is visible."""
+    """Return True if the bubble at end_index (0 or 1) is visible in view."""
     try:
         end = DatumEnds.End0 if end_index == 0 else DatumEnds.End1
         return grid.IsBubbleVisibleInView(end, view)
     except Exception:
-        # On failure assume bubble is present so the grid is not silently skipped.
-        return True
+        return True  # assume present if check fails
 
 
 # =============================================================================
@@ -204,17 +177,12 @@ def grid_has_bubble_at_end(grid, view, end_index):
 def collect_bubble_entries(document, view):
     """Return one dict per visible bubble endpoint in this view.
 
-    Each dict contains:
-        grid        — Grid element
-        grid_id     — ElementId integer value
-        curve       — the line used to read the endpoint position
-        end_index   — 0 or 1 (which end has the bubble)
-        point       — XYZ of the bubble endpoint in model space
+    Keys: grid, grid_id, curve, end_index, point
     """
     entries = []
     grids = FilteredElementCollector(document, view.Id).OfClass(Grid).ToElements()
     for g in grids:
-        curve, _ = get_grid_curve_in_view(g, view)
+        curve = get_grid_curve_in_view(g, view)
         if curve is None:
             continue
         for end_index in (0, 1):
@@ -231,18 +199,10 @@ def collect_bubble_entries(document, view):
 
 
 # =============================================================================
-# Collision detection — view-scale-aware, 2D only
+# Collision detection
 # =============================================================================
 def find_colliding_pairs(entries, threshold):
-    """Return list of (entry_a, entry_b) pairs whose bubble endpoints are
-    within threshold model-feet of each other.
-
-    Z component is intentionally ignored — grid bubbles only collide in the
-    2D view plane. Comparing squared distance avoids a sqrt call.
-
-    Pairs where both entries belong to the same grid are excluded — that is
-    just the two ends of one grid, not a real collision.
-    """
+    """Return (entry_a, entry_b) pairs within threshold feet (2D, Z ignored)."""
     pairs = []
     n = len(entries)
     threshold_sq = threshold * threshold
@@ -260,7 +220,7 @@ def find_colliding_pairs(entries, threshold):
 
 
 def choose_entry_to_move(entry_a, entry_b):
-    """Always move the entry with the higher ElementId — deterministic."""
+    """Move the entry with the higher ElementId — deterministic across runs."""
     return entry_a if entry_a['grid_id'] > entry_b['grid_id'] else entry_b
 
 
@@ -268,12 +228,7 @@ def choose_entry_to_move(entry_a, entry_b):
 # Offset application
 # =============================================================================
 def perpendicular_offset_vector(curve, view, distance):
-    """Return a vector perpendicular to the grid in the view plane, length=distance.
-
-    view.ViewDirection × grid_direction gives a vector that is:
-      - 90 degrees to the grid line
-      - lying in the view's work plane (correct for plan views)
-    """
+    """Vector perpendicular to the grid direction in the view plane."""
     try:
         direction = (curve.GetEndPoint(1) - curve.GetEndPoint(0)).Normalize()
     except Exception:
@@ -285,12 +240,34 @@ def perpendicular_offset_vector(curve, view, distance):
     return perp.Multiply(distance)
 
 
-def apply_offset(entry, view, offset_distance, already_moved_keys):
-    """Move the bubble endpoint perpendicular to the grid and write it back
-    as a ViewSpecific curve so only this view's annotation is changed.
+def promote_to_view_specific(grid, view):
+    """Ensure the grid has ViewSpecific extents in this view.
 
-    already_moved_keys (set of (grid_id, end_index)) prevents moving the
-    same endpoint twice when a grid collides with more than one neighbour.
+    SetCurveInView() (singular — the correct IronPython method) will throw
+    if the grid is still using Model extents. Calling SetDatumExtentType()
+    on both ends first promotes the grid to a ViewSpecific override so the
+    subsequent SetCurveInView() call is accepted by Revit.
+    """
+    try:
+        grid.SetDatumExtentType(DatumEnds.End0, view, DatumExtentType.ViewSpecific)
+        grid.SetDatumExtentType(DatumEnds.End1, view, DatumExtentType.ViewSpecific)
+    except Exception as ex:
+        logger.debug("SetDatumExtentType failed for grid {}: {}".format(
+            grid.Id.IntegerValue, ex))
+
+
+def apply_offset(entry, view, offset_distance, already_moved_keys):
+    """Move the bubble endpoint perpendicular to the grid and write it back.
+
+    CRITICAL FIX: The correct IronPython Revit API method is SetCurveInView
+    (singular), NOT SetCurvesInView (plural). The plural form does not exist
+    on the Grid class binding in IronPython and raises AttributeError.
+
+    Signature: grid.SetCurveInView(DatumExtentType, View, Curve)
+    — takes a single Curve directly, not an IList.
+
+    Also calls promote_to_view_specific() first so the grid accepts the
+    ViewSpecific write even if it was previously on Model extents.
 
     Returns True if a change was written, False if skipped.
     """
@@ -312,11 +289,15 @@ def apply_offset(entry, view, offset_distance, already_moved_keys):
     else:
         new_curve = Line.CreateBound(fixed_pt, new_bubble)
 
-    curve_list = List[RvtCurve]()
-    curve_list.Add(new_curve)
+    # Promote to ViewSpecific BEFORE writing — required when the grid
+    # was previously using Model extents (the default state).
+    promote_to_view_specific(grid, view)
 
-    # Always write ViewSpecific — never moves the model grid line.
-    grid.SetCurvesInView(DatumExtentType.ViewSpecific, view, curve_list)
+    # SetCurveInView — SINGULAR. Takes (DatumExtentType, View, Curve).
+    # This is the correct IronPython binding. SetCurvesInView (plural)
+    # does not exist on the Grid class.
+    grid.SetCurveInView(DatumExtentType.ViewSpecific, view, new_curve)
+
     already_moved_keys.add(key)
     return True
 
@@ -335,7 +316,7 @@ def main():
         )
         script.exit()
 
-    # ---- 2. Stats trackers --------------------------------------------------
+    # ---- 2. Stats -----------------------------------------------------------
     views_processed  = 0
     collisions_found = 0
     collisions_fixed = 0
@@ -348,8 +329,6 @@ def main():
 
         for view in views:
             try:
-                # Threshold and offset scale automatically with this view's
-                # print scale — no user input needed.
                 threshold   = bubble_diameter_model_units(view)
                 offset_dist = offset_distance_model_units(view)
 
@@ -393,7 +372,7 @@ def main():
         logger.debug(traceback.format_exc())
         script.exit()
 
-    # ---- 4. Results summary -------------------------------------------------
+    # ---- 4. Results ---------------------------------------------------------
     summary = "\n".join([
         "Views processed:  {}".format(views_processed),
         "Collisions found: {}".format(collisions_found),
