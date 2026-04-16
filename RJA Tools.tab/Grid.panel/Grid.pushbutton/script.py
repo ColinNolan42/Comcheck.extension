@@ -259,14 +259,16 @@ def collect_bubble_entries(document, view):
             seen_keys.add(key)
 
             pt = curve.GetEndPoint(end_index)
+            is_vertical = abs(dy) >= abs(dx)
             entries.append({
-                'grid':      g,
-                'grid_id':   g.Id.IntegerValue,
-                'name':      g.Name,
-                'end_index': end_index,
-                'x':         pt.X,
-                'y':         pt.Y,
-                'z':         pt.Z,
+                'grid':        g,
+                'grid_id':     g.Id.IntegerValue,
+                'name':        g.Name,
+                'end_index':   end_index,
+                'x':           pt.X,
+                'y':           pt.Y,
+                'z':           pt.Z,
+                'is_vertical': is_vertical,
             })
 
     return entries
@@ -302,39 +304,76 @@ def choose_entry_to_move(entry_a, entry_b):
     return entry_a if entry_a['grid_id'] < entry_b['grid_id'] else entry_b
 
 
+def get_bubble_end_for_direction(grid, view, is_vertical):
+    """Return the DatumEnds and end_index that will produce the correct
+    offset direction when AddLeader is called.
+
+    Vertical grids (bubble at bottom, End1):
+      Revit's AddLeader on End1 offsets LEFT then UP — correct.
+      Use End1.
+
+    Horizontal grids (bubble on right side, End1):
+      Revit's AddLeader on End1 offsets DOWN then LEFT — WRONG (goes down).
+      Revit's AddLeader on End0 offsets UP then LEFT — CORRECT (goes up).
+      Solution: hide bubble on End1, show on End0, use End0.
+
+    Returns (datum_end, end_index, swapped) where swapped=True means
+    we moved the bubble from End1 to End0 to get the correct direction.
+    """
+    if is_vertical:
+        # End1 is the bottom bubble — use it directly
+        return DatumEnds.End1, 1, False
+    else:
+        # Horizontal grid — use End0 to get upward direction
+        # Check if bubble is currently on End1 (right side)
+        try:
+            end1_vis = grid.IsBubbleVisibleInView(DatumEnds.End1, view)
+            end0_vis = grid.IsBubbleVisibleInView(DatumEnds.End0, view)
+        except Exception:
+            end1_vis = True
+            end0_vis = False
+
+        if end1_vis and not end0_vis:
+            # Move bubble to End0 for upward direction
+            grid.HideBubbleInView(DatumEnds.End1, view)
+            grid.ShowBubbleInView(DatumEnds.End0, view)
+            return DatumEnds.End0, 0, True
+        elif end0_vis:
+            return DatumEnds.End0, 0, False
+        else:
+            return DatumEnds.End1, 1, False
+
+
 # =============================================================================
 # Leader application — AddLeader ONLY, no SetLeader
 # =============================================================================
 def apply_leader(target_entry, view, already_done_keys):
-    """Add a leader to the target grid's bubble end if not already present.
+    """Add a leader to the target grid's bubble end.
 
-    We call AddLeader only. Revit places the bubble in a valid separated
-    position automatically — no SetLeader needed or called.
+    For vertical grids: uses End1 (bottom bubble) — Revit offsets correctly.
+    For horizontal grids: moves bubble to End0 if needed so AddLeader
+    offsets UP instead of DOWN, then adds leader on End0.
 
-    The default AddLeader geometry (confirmed by diagnostic):
-      Vertical grids:   Anchor offset left, Elbow up, End on axis above
-      Horizontal grids: Anchor offset down, Elbow left, End on axis left
-    This IS the correct elbow/break visual separation.
-
-    Grids that already have a leader are skipped — they were either
-    fixed in a previous run or earlier in this transaction.
-
+    Multi-pass safe: already_done_keys prevents double-processing.
     Returns True if leader was added, False if skipped.
     """
-    grid      = target_entry['grid']
-    end_index = target_entry['end_index']
-    datum_end = DatumEnds.End0 if end_index == 0 else DatumEnds.End1
+    grid = target_entry['grid']
+    is_vertical = target_entry['is_vertical']
+
+    # Get the correct end for desired direction
+    datum_end, end_index, swapped = get_bubble_end_for_direction(
+        grid, view, is_vertical)
 
     key = (target_entry['grid_id'], end_index)
     if key in already_done_keys:
         return False
 
-    # Skip if leader already exists — idempotent across repeated runs
+    # Skip if leader already exists on this end
     if grid_has_leader_at_end(grid, view, end_index):
         already_done_keys.add(key)
         return False
 
-    # AddLeader only — Revit handles all geometry automatically
+    # AddLeader only — Revit handles geometry
     grid.AddLeader(datum_end, view)
     already_done_keys.add(key)
     return True
@@ -372,7 +411,6 @@ def main():
     views_processed  = 0
     collisions_found = 0
     leaders_added    = 0
-    already_had      = 0
     per_view_errors  = []
 
     t = Transaction(doc, "Separate Grid Bubbles")
@@ -382,35 +420,41 @@ def main():
         for view in views:
             try:
                 threshold = collision_threshold(view, bubble_diam_ft)
-
-                entries = collect_bubble_entries(doc, view)
-                if len(entries) < 2:
-                    views_processed += 1
-                    continue
-
-                pairs = find_colliding_pairs(entries, threshold)
-                collisions_found += len(pairs)
-
                 done_keys = set()
-                for a, b in pairs:
-                    target = choose_entry_to_move(a, b)
+                MAX_PASSES = 10
 
-                    # Track grids that already had leaders
-                    end = DatumEnds.End0 if target['end_index'] == 0 else DatumEnds.End1
-                    if grid_has_leader_at_end(target['grid'], view, target['end_index']):
-                        already_had += 1
-                        done_keys.add((target['grid_id'], target['end_index']))
-                        continue
+                for pass_num in range(MAX_PASSES):
+                    entries = collect_bubble_entries(doc, view)
+                    if len(entries) < 2:
+                        break
 
-                    try:
-                        if apply_leader(target, view, done_keys):
-                            leaders_added += 1
-                    except Exception as ex:
-                        per_view_errors.append((
-                            view.Name,
-                            "Grid {}: {}".format(target['grid_id'], ex),
-                        ))
-                        logger.debug(traceback.format_exc())
+                    pairs = find_colliding_pairs(entries, threshold)
+
+                    # Filter to pairs where target doesn't already have a leader
+                    actionable = []
+                    for a, b in pairs:
+                        target = choose_entry_to_move(a, b)
+                        key = (target['grid_id'], target['end_index'])
+                        if key not in done_keys and not grid_has_leader_at_end(
+                                target['grid'], view, target['end_index']):
+                            actionable.append((target, a, b))
+
+                    collisions_found += len(pairs)
+
+                    if not actionable:
+                        # No new leaders to add — all collisions resolved
+                        break
+
+                    for target, a, b in actionable:
+                        try:
+                            if apply_leader(target, view, done_keys):
+                                leaders_added += 1
+                        except Exception as ex:
+                            per_view_errors.append((
+                                view.Name,
+                                "Grid {}: {}".format(target['grid_id'], ex),
+                            ))
+                            logger.debug(traceback.format_exc())
 
                 views_processed += 1
 
@@ -432,11 +476,10 @@ def main():
         script.exit()
 
     summary = "\n".join([
-        "Views processed:     {}".format(views_processed),
-        "Collisions found:    {}".format(collisions_found),
-        "Leaders added:       {}".format(leaders_added),
-        "Already had leader:  {}".format(already_had),
-        "Errors:              {}".format(len(per_view_errors)),
+        "Views processed:  {}".format(views_processed),
+        "Collisions found: {}".format(collisions_found),
+        "Leaders added:    {}".format(leaders_added),
+        "Errors:           {}".format(len(per_view_errors)),
     ])
 
     output.print_md("### Results\n```\n{}\n```".format(summary))
