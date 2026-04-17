@@ -253,20 +253,32 @@ def grid_has_leader_at_end(grid, view, end_index):
 # Alphanumeric sort key — used to enforce name-order nudge guard
 # =============================================================================
 def name_sort_key(name):
-    """Sort key: integers by value (4<5<10), letters alphabetically (A<B<C)."""
+    """Sort key reflecting position in counting/alphabet sequence.
+
+    Further in sequence = higher sort value = moves away first.
+
+    Numbers: higher number = further in sequence = higher value
+      4 < 5 < 6 < 10  (standard numeric order)
+
+    Letters: higher letter = further in alphabet = higher value
+      A < B < C < D < E  (standard alphabetical order)
+      So D > C, E > D — further letters move away first.
+
+    Mixed names split into chunks and handled naturally.
+    """
     import re
     parts = re.split(r'(\d+)', str(name))
     key = []
     for part in parts:
         if part.isdigit():
-            key.append((0, int(part)))
+            key.append((0, int(part)))        # higher number = higher value
         else:
-            key.append((1, part.upper()))
+            key.append((1, part.upper()))     # D > C > B > A (standard alpha)
     return key
 
 
 def higher_name(name_a, name_b):
-    """Return True if name_a sorts higher than name_b."""
+    """Return True if name_a is further in the counting/alphabet sequence."""
     return name_sort_key(name_a) > name_sort_key(name_b)
 
 
@@ -435,27 +447,23 @@ def process_view(view, bubble_diam_ft, threshold):
         if not pairs:
             break  # all clear
 
-        # Build a dict of unique targets to nudge this iteration.
-        # Key: (grid_id, end_index)
-        # Value: [grid, datum_end, nudge_x, nudge_y]
+        # Build targets dict.
+        # Direction rule — sequence order determines movement direction:
         #
-        # Direction rule — name order determines movement direction:
-        #   Higher name moves in +perp direction (right for vertical,
-        #   up for horizontal based on standard grid layout).
-        #   Lower name moves in -perp direction (left / down).
+        #   Higher in sequence (further along counting/alphabet) moves +perp.
+        #   Lower in sequence moves -perp.
         #
-        # This guarantees bubbles always diverge from each other —
-        # higher numbers/letters go one way, lower go the other.
-        # No bubble can cross toward a lower-named neighbour because
-        # the direction is fixed by name order, not by dot product.
+        #   Numbers: 6 > 5 > 4. In a collision, 6 moves +perp (right/down
+        #   away from 5 and 4). 4 moves -perp. 5 moves based on neighbours.
         #
-        # Example: 8, 9, 10 all colliding
-        #   10 always moves +perp (right)
-        #   9  always moves +perp (right) relative to 8, -perp relative to 10
-        #      -> net: determined by its neighbours' names
-        #   8  always moves -perp (left)
+        #   Letters: E > D > C. In a collision, E moves +perp away from D/C.
+        #   C moves -perp. D moves based on neighbours.
+        #
+        #   CRITICAL — apply order: process furthest-in-sequence FIRST.
+        #   In triple 4,5,6: move 6 first into open space, then 5 into
+        #   space 6 vacated, then 4 if needed. This prevents 5 landing
+        #   on top of 6 when 5 moves before 6 has cleared.
         targets = {}
-
         name_map = {g.Id.IntegerValue: g.Name for g in grids}
 
         for pos_a, pos_b in pairs:
@@ -468,37 +476,45 @@ def process_view(view, bubble_diam_ft, threshold):
             perp_a = get_perp_direction(g_a, view)
             perp_b = get_perp_direction(g_b, view)
 
-            # Determine sign for each grid based purely on name order.
-            # Higher name gets +1 (moves in +perp direction).
-            # Lower name gets -1 (moves in -perp direction).
-            # Both grids move — they diverge from each other.
+            # Higher in sequence → +perp (moves further away)
+            # Lower in sequence → -perp (moves back / stays)
             if higher_name(name_a, name_b):
-                sign_a = 1.0   # a is higher — moves +perp
-                sign_b = -1.0  # b is lower  — moves -perp
+                sign_a =  1.0   # a is further in sequence → +perp
+                sign_b = -1.0   # b is lower → -perp
             else:
-                sign_a = -1.0  # a is lower  — moves -perp
-                sign_b = 1.0   # b is higher — moves +perp
+                sign_a = -1.0   # a is lower → -perp
+                sign_b =  1.0   # b is further in sequence → +perp
 
-            # Accumulate nudge for g_a
             key_a = (g_a.Id.IntegerValue, idx_a)
             if key_a not in targets:
-                targets[key_a] = [g_a, end_a, 0.0, 0.0]
+                targets[key_a] = [g_a, end_a, 0.0, 0.0, name_a]
             targets[key_a][2] += perp_a.X * sign_a
             targets[key_a][3] += perp_a.Y * sign_a
 
-            # Accumulate nudge for g_b
             key_b = (g_b.Id.IntegerValue, idx_b)
             if key_b not in targets:
-                targets[key_b] = [g_b, end_b, 0.0, 0.0]
+                targets[key_b] = [g_b, end_b, 0.0, 0.0, name_b]
             targets[key_b][2] += perp_b.X * sign_b
             targets[key_b][3] += perp_b.Y * sign_b
 
-        # Apply one nudge per unique target this iteration
-        for key, (move_grid, move_end, net_x, net_y) in targets.items():
+        # Sort targets furthest-in-sequence FIRST before applying nudges.
+        # This ensures 6 moves before 5 before 4 so each one moves into
+        # the space the previous one vacated — no cascading overlaps.
+        sorted_targets = sorted(
+            targets.items(),
+            key=lambda item: name_sort_key(item[1][4]),
+            reverse=True   # highest sequence value first
+        )
+
+        for key, target_data in sorted_targets:
+            move_grid = target_data[0]
+            move_end  = target_data[1]
+            net_x     = target_data[2]
+            net_y     = target_data[3]
+
             net_len = (net_x * net_x + net_y * net_y) ** 0.5
             if net_len < 1e-9:
                 continue
-            # Normalise the net direction
             nx = net_x / net_len
             ny = net_y / net_len
 
