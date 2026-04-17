@@ -82,8 +82,9 @@ PLAN_VIEW_TYPES = {
 }
 
 # Bubble diameter: 1/2" paper space = 0.04167 ft
-# Multiplied by view.Scale for model-space threshold
-DEFAULT_BUBBLE_DIAMETER_FT = 0.5 / 12.0
+# Bubble diameter: 2.0 ft directly in Revit model space.
+# This is used as-is for collision detection — no view.Scale multiplication.
+DEFAULT_BUBBLE_DIAMETER_FT = 2.0
 
 MIN_GRID_LENGTH_FT = 0.01
 MAX_ITERATIONS     = 500   # safety cap on nudge loop per view
@@ -156,26 +157,22 @@ def read_bubble_diameter_ft(grid):
     output.print_md("Could not read bubble diameter from annotation family.")
     try:
         raw = forms.ask_for_string(
-            default="0.5",
-            prompt=("Enter the grid bubble diameter in INCHES as it appears "
-                    "on the printed sheet.\n"
-                    "Common sizes: 0.5\" (1/2\"), 0.375\" (3/8\"), 0.25\" (1/4\")\n"
-                    "Tip: measure the bubble circle on a printed sheet."),
-            title="Grid Bubble Diameter",
+            default="2.0",
+            prompt=("Enter the grid bubble diameter in MODEL SPACE FEET.\n"
+                    "This is how large the bubble appears in the Revit model.\n"
+                    "Common value: 2.0 ft (displays as 1/4\" at 1/8\" scale)."),
+            title="Grid Bubble Diameter (Model Space Feet)",
         )
         if raw:
             val = float(raw)
-            if 0.1 < val < 5.0:
-                diameter_ft = val / 12.0
+            if 0.01 < val < 100.0:
                 output.print_md(
-                    "User-entered bubble diameter: "
-                    "**{} in ({:.5f} ft)**".format(val, diameter_ft))
-                return diameter_ft
+                    "User-entered bubble diameter: **{} ft**".format(val))
+                return val
     except Exception:
         pass
 
-    output.print_md("Using default: **1/2 in ({:.5f} ft)**".format(
-        DEFAULT_BUBBLE_DIAMETER_FT))
+    output.print_md("Using default: **{} ft**".format(DEFAULT_BUBBLE_DIAMETER_FT))
     return DEFAULT_BUBBLE_DIAMETER_FT
 
 
@@ -183,13 +180,12 @@ def read_bubble_diameter_ft(grid):
 # Collision threshold
 # =============================================================================
 def collision_threshold(view, bubble_diameter_ft):
-    try:
-        scale = float(view.Scale)
-        if scale <= 0:
-            scale = 96.0
-    except Exception:
-        scale = 96.0
-    return bubble_diameter_ft * scale
+    """Return the collision threshold in model-space feet.
+
+    bubble_diameter_ft is already in model space (2.0 ft) so no
+    view.Scale multiplication is needed. Returned directly.
+    """
+    return bubble_diameter_ft
 
 
 # =============================================================================
