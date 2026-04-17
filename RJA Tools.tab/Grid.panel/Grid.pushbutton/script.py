@@ -121,6 +121,12 @@ def pick_reference_grid():
 
 
 def read_bubble_diameter_ft(grid):
+    """Read bubble diameter from grid head annotation family.
+
+    Tries common parameter names on the grid head symbol.
+    If unreadable, prompts user to enter the paper-space diameter in inches.
+    Returns diameter in Revit internal feet.
+    """
     try:
         grid_type = doc.GetElement(grid.GetTypeId())
         if grid_type is not None:
@@ -140,10 +146,33 @@ def read_bubble_diameter_ft(grid):
                             if 0.01 < diameter_ft < 10.0:
                                 output.print_md(
                                     "Bubble diameter from family: "
-                                    "**{:.4f} ft**".format(diameter_ft))
+                                    "**{:.4f} ft ({:.4f} in)**".format(
+                                        diameter_ft, diameter_ft * 12.0))
                                 return diameter_ft
     except Exception as ex:
         logger.debug("read_bubble_diameter_ft: {}".format(ex))
+
+    # Could not read from family — ask user
+    output.print_md("Could not read bubble diameter from annotation family.")
+    try:
+        raw = forms.ask_for_string(
+            default="0.5",
+            prompt=("Enter the grid bubble diameter in INCHES as it appears "
+                    "on the printed sheet.\n"
+                    "Common sizes: 0.5\" (1/2\"), 0.375\" (3/8\"), 0.25\" (1/4\")\n"
+                    "Tip: measure the bubble circle on a printed sheet."),
+            title="Grid Bubble Diameter",
+        )
+        if raw:
+            val = float(raw)
+            if 0.1 < val < 5.0:
+                diameter_ft = val / 12.0
+                output.print_md(
+                    "User-entered bubble diameter: "
+                    "**{} in ({:.5f} ft)**".format(val, diameter_ft))
+                return diameter_ft
+    except Exception:
+        pass
 
     output.print_md("Using default: **1/2 in ({:.5f} ft)**".format(
         DEFAULT_BUBBLE_DIAMETER_FT))
@@ -222,6 +251,27 @@ def grid_has_leader_at_end(grid, view, end_index):
         return grid.GetLeader(end, view) is not None
     except Exception:
         return False
+
+
+# =============================================================================
+# Alphanumeric sort key — used to enforce name-order nudge guard
+# =============================================================================
+def name_sort_key(name):
+    """Sort key: integers by value (4<5<10), letters alphabetically (A<B<C)."""
+    import re
+    parts = re.split(r'(\d+)', str(name))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.upper()))
+    return key
+
+
+def higher_name(name_a, name_b):
+    """Return True if name_a sorts higher than name_b."""
+    return name_sort_key(name_a) > name_sort_key(name_b)
 
 
 # =============================================================================
@@ -391,41 +441,61 @@ def process_view(view, bubble_diam_ft, threshold):
 
         # Build a dict of unique targets to nudge this iteration.
         # Key: (grid_id, end_index)
-        # Value: (grid, datum_end, net_x, net_y) — net direction accumulates
-        # contributions from ALL colliding neighbours so each grid is nudged
-        # once per iteration in the best net direction away from everything.
+        # Value: [grid, datum_end, nudge_x, nudge_y]
+        #
+        # Direction rule — name order determines movement direction:
+        #   Higher name moves in +perp direction (right for vertical,
+        #   up for horizontal based on standard grid layout).
+        #   Lower name moves in -perp direction (left / down).
+        #
+        # This guarantees bubbles always diverge from each other —
+        # higher numbers/letters go one way, lower go the other.
+        # No bubble can cross toward a lower-named neighbour because
+        # the direction is fixed by name order, not by dot product.
+        #
+        # Example: 8, 9, 10 all colliding
+        #   10 always moves +perp (right)
+        #   9  always moves +perp (right) relative to 8, -perp relative to 10
+        #      -> net: determined by its neighbours' names
+        #   8  always moves -perp (left)
         targets = {}
+
+        name_map = {g.Id.IntegerValue: g.Name for g in grids}
 
         for pos_a, pos_b in pairs:
             g_a, end_a, idx_a, anchor_a = pos_a
             g_b, end_b, idx_b, anchor_b = pos_b
 
+            name_a = name_map.get(g_a.Id.IntegerValue, "")
+            name_b = name_map.get(g_b.Id.IntegerValue, "")
+
             perp_a = get_perp_direction(g_a, view)
             perp_b = get_perp_direction(g_b, view)
 
-            clash_vec = anchor_a - anchor_b
-            dot_a = clash_vec.X * perp_a.X + clash_vec.Y * perp_a.Y
-
-            # The grid whose anchor is further in the perp direction moves.
-            # Accumulate net direction — handles case where one grid collides
-            # with multiple neighbours (triple/quad collision).
-            if dot_a >= 0:
-                # g_a moves — away direction is +perp_a
-                key = (g_a.Id.IntegerValue, idx_a)
-                if key not in targets:
-                    targets[key] = [g_a, end_a, 0.0, 0.0]
-                targets[key][2] += perp_a.X
-                targets[key][3] += perp_a.Y
+            # Determine sign for each grid based purely on name order.
+            # Higher name gets +1 (moves in +perp direction).
+            # Lower name gets -1 (moves in -perp direction).
+            # Both grids move — they diverge from each other.
+            if higher_name(name_a, name_b):
+                sign_a = 1.0   # a is higher — moves +perp
+                sign_b = -1.0  # b is lower  — moves -perp
             else:
-                # g_b moves — away direction is +perp_b (sign from dot)
-                clash_vec_b = anchor_b - anchor_a
-                dot_b = clash_vec_b.X * perp_b.X + clash_vec_b.Y * perp_b.Y
-                sign_b = 1.0 if dot_b >= 0 else -1.0
-                key = (g_b.Id.IntegerValue, idx_b)
-                if key not in targets:
-                    targets[key] = [g_b, end_b, 0.0, 0.0]
-                targets[key][2] += perp_b.X * sign_b
-                targets[key][3] += perp_b.Y * sign_b
+                sign_a = -1.0  # a is lower  — moves -perp
+                sign_b = 1.0   # b is higher — moves +perp
+
+            # Accumulate nudge for g_a
+            key_a = (g_a.Id.IntegerValue, idx_a)
+            if key_a not in targets:
+                targets[key_a] = [g_a, end_a, 0.0, 0.0]
+            targets[key_a][2] += perp_a.X * sign_a
+            targets[key_a][3] += perp_a.Y * sign_a
+
+            # Accumulate nudge for g_b
+            key_b = (g_b.Id.IntegerValue, idx_b)
+            if key_b not in targets:
+                targets[key_b] = [g_b, end_b, 0.0, 0.0]
+            targets[key_b][2] += perp_b.X * sign_b
+            targets[key_b][3] += perp_b.Y * sign_b
 
         # Apply one nudge per unique target this iteration
         for key, (move_grid, move_end, net_x, net_y) in targets.items():
