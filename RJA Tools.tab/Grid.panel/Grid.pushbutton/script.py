@@ -285,15 +285,25 @@ def higher_name(name_a, name_b):
 # =============================================================================
 # Perpendicular direction — universal, works for any grid orientation
 # =============================================================================
-def get_perp_direction(grid, view):
-    """Return the 2D unit vector perpendicular to the grid line.
+def get_nudge_direction(grid, view):
+    """Return the unit vector that represents the +perp nudge direction.
 
-    Uses Curve.Direction cross product in the view plane:
-      tan  = grid direction (normalised)
-      perp = XYZ(-tan.Y, tan.X, 0)
+    We define +perp as the direction that HIGHER named grids should move:
 
-    This works for vertical, horizontal, and diagonal grids in any
-    Revit version without hardcoding +X/-X/+Y/-Y assumptions.
+    Vertical grids (running top-to-bottom, tan ~ Y axis):
+      tan = (0,1,0), raw perp = (-1,0,0) = LEFT
+      Higher numbers should move RIGHT (+X) away from lower numbers.
+      So we NEGATE: return (1, 0, 0) = RIGHT for higher numbers.
+
+    Horizontal grids (running left-to-right, tan ~ X axis):
+      tan = (1,0,0), raw perp = (0,1,0) = UP
+      Higher letters should move DOWN (-Y) away from lower letters.
+      So we NEGATE: return (0, -1, 0) = DOWN for higher letters.
+
+    For diagonal grids the same negation applies — we always want
+    the higher-named grid to move AWAY from lower-named ones, which
+    means moving in the direction further from the origin of the grid
+    sequence. Negating the cross-product perp achieves this.
     """
     try:
         curve = get_grid_curve_in_view(grid, view)
@@ -306,10 +316,13 @@ def get_perp_direction(grid, view):
         length = (dx * dx + dy * dy) ** 0.5
         if length < 1e-9:
             return XYZ(1.0, 0.0, 0.0)
-        # Normalise then rotate 90 degrees in XY plane
         tan_x = dx / length
         tan_y = dy / length
-        return XYZ(-tan_y, tan_x, 0.0)
+        # Raw perp (CCW rotation): (-tan_y, tan_x)
+        # Negate so higher-named grids move in the correct away direction:
+        #   Vertical:   raw=(-1,0) → negated=(+1,0) = RIGHT  ✓
+        #   Horizontal: raw=(0,+1) → negated=(0,-1) = DOWN   ✓
+        return XYZ(tan_y, -tan_x, 0.0)
     except Exception:
         return XYZ(1.0, 0.0, 0.0)
 
@@ -473,8 +486,8 @@ def process_view(view, bubble_diam_ft, threshold):
             name_a = name_map.get(g_a.Id.IntegerValue, "")
             name_b = name_map.get(g_b.Id.IntegerValue, "")
 
-            perp_a = get_perp_direction(g_a, view)
-            perp_b = get_perp_direction(g_b, view)
+            perp_a = get_nudge_direction(g_a, view)
+            perp_b = get_nudge_direction(g_b, view)
 
             # Higher in sequence → +perp (moves further away)
             # Lower in sequence → -perp (moves back / stays)
