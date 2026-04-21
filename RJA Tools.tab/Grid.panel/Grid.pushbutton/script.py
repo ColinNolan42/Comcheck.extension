@@ -1,20 +1,18 @@
 # -*- coding: utf-8 -*-
 """Separates colliding grid bubbles on plan views placed on sheets.
 
-VERSION 19.0.0 — fixes:
-  - Degenerate leader (Anchor == Elbow after pre-existing leader reuse):
-    reset Elbow to midpoint of [Anchor..End] before nudging so the
-    parametric segment has non-zero length and clamping works correctly.
-  - Stale leader whose End is off the grid axis (from a previous run on a
-    different crop): catch the SetLeader error, remove the bad leader,
-    re-add it fresh, regenerate, then retry the nudge in the same iteration.
-  - Diagnostic logging retained but scoped to collision-relevant grids only
-    to keep output readable.
+VERSION 20.0.0 — root cause fix:
+  clamp_elbow_to_segment() now decomposes the proposed Elbow into
+  ALONG-segment and PERPENDICULAR components separately.
+  Only the along-segment component is clamped to t in [0.05, 0.95].
+  The perpendicular component (the actual nudge direction) is preserved
+  completely. This means a DOWN nudge on a horizontal grid correctly
+  moves the Elbow DOWN rather than being projected to zero movement.
 """
 
 __title__   = "Separate\nGrid Bubbles"
 __author__  = "MEP Tools"
-__version__ = "19.0.0"
+__version__ = "20.0.0"
 __doc__     = ("Separates colliding grid bubbles using leader elbow nudging. "
                "Works for any grid orientation in Revit 2022-2025.")
 
@@ -50,15 +48,14 @@ PLAN_VIEW_TYPES = {
 DEFAULT_BUBBLE_DIAMETER_FT = 2.0
 MAX_ITERATIONS             = 50
 MAX_PASSES                 = 20
-
-DEGENERATE_THRESHOLD = 1e-6   # Anchor==Elbow within this distance → reset
+DEGENERATE_THRESHOLD       = 1e-4
 
 
 # =============================================================================
 # Name sort helpers
 # =============================================================================
 def name_sort_key(name):
-    """Universal sort key: 3 < 3.1 < 3.3 < 4,  H < H.1 < H.2 < I."""
+    """3 < 3.1 < 3.3 < 4,  H < H.1 < H.2 < I — universal, no hardcoding."""
     key = []
     for seg in str(name).split("."):
         m = re.match(r'^([A-Za-z]*)(\d*)$', seg.strip())
@@ -230,9 +227,9 @@ def get_nudge_direction(grid, view):
         if L < 1e-9:
             return XYZ(1.0, 0.0, 0.0)
         tx, ty = dx/L, dy/L
-        if abs(ty) > abs(tx):        # vertical: primary = Y
+        if abs(ty) > abs(tx):
             if ty < 0.0: tx, ty = -tx, -ty
-        else:                        # horizontal: primary = X
+        else:
             if tx < 0.0: tx, ty = -tx, -ty
         return XYZ(ty, -tx, 0.0)
     except Exception:
@@ -280,30 +277,63 @@ def find_colliding_pairs(positions, threshold):
 
 
 # =============================================================================
-# Elbow clamping — true parametric segment
+# Elbow placement — decomposed along/perp, clamp only along component
 # =============================================================================
-def clamp_elbow_to_segment(px, py, anchor, end):
+def place_elbow(proposed_x, proposed_y, anchor, end):
+    """Compute a valid Elbow position from a proposed XY point.
+
+    Decomposes the proposed point into:
+      - ALONG component: projection onto the Anchor→End segment (clamped
+        to t in [0.05, 0.95] to satisfy Revit's "between" constraint)
+      - PERPENDICULAR component: offset from the segment line (preserved
+        exactly — this is the actual nudge movement)
+
+    Result: segment_point_at_t_clamped + perpendicular_offset
+
+    For a horizontal grid nudged DOWN:
+      - Along component stays at t=0.05 (just inside Anchor end)
+      - Perpendicular component = full DOWN offset
+      → Elbow moves correctly DOWN, Revit constraint satisfied.
+
+    For a vertical grid nudged RIGHT:
+      - Along component stays at t=0.05 (just inside Anchor end)
+      - Perpendicular component = full RIGHT offset
+      → Elbow moves correctly RIGHT, Revit constraint satisfied.
+    """
     ax, ay = anchor.X, anchor.Y
     ex, ey = end.X,    end.Y
-    sx, sy = ex-ax,    ey-ay
+    sx, sy = ex - ax,  ey - ay
     ss     = sx*sx + sy*sy
+
     if ss < 1e-12:
-        return XYZ((ax+ex)*0.5, (ay+ey)*0.5, anchor.Z)
-    t = ((px-ax)*sx + (py-ay)*sy) / ss
-    t = max(0.05, min(0.95, t))
-    return XYZ(ax + t*sx, ay + t*sy, anchor.Z)
+        # Degenerate segment — just return proposed point at anchor Z
+        return XYZ(proposed_x, proposed_y, anchor.Z)
+
+    # Parameter of proposed point projected onto Anchor→End line
+    t_raw = ((proposed_x - ax) * sx +
+             (proposed_y - ay) * sy) / ss
+
+    # Clamp t strictly inside the segment
+    t_clamped = max(0.05, min(0.95, t_raw))
+
+    # Point on segment at clamped t
+    seg_x = ax + t_clamped * sx
+    seg_y = ay + t_clamped * sy
+
+    # Perpendicular offset = proposed point minus its projection on the line
+    # (uses raw t, not clamped, to get true perp offset)
+    proj_x  = ax + t_raw * sx
+    proj_y  = ay + t_raw * sy
+    perp_x  = proposed_x - proj_x
+    perp_y  = proposed_y - proj_y
+
+    return XYZ(seg_x + perp_x, seg_y + perp_y, anchor.Z)
 
 
 # =============================================================================
 # Leader repair: remove stale/degenerate leader and re-add fresh
 # =============================================================================
 def repair_leader(grid, datum_end, end_index, view):
-    """Remove the existing leader and add a fresh one.
-    Returns True if the new leader is ready, False on failure.
-    Called when:
-      (a) SetLeader throws (stale End off axis), or
-      (b) Anchor == Elbow after initial AddLeader (degenerate geometry).
-    """
     try:
         grid.RemoveLeader(datum_end, view)
     except Exception as ex:
@@ -327,9 +357,7 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
     errors          = []
     name_map        = {g.Id.IntegerValue: g.Name for g in grids}
 
-    # ------------------------------------------------------------------
     # Phase A: detect collisions, add leaders to higher-named movers only
-    # ------------------------------------------------------------------
     positions = collect_bubble_positions(grids, view)
     pairs     = find_colliding_pairs(positions, threshold)
 
@@ -360,29 +388,28 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
             continue
         if key not in pos_lookup:
             continue
-        g, de    = pos_lookup[key]
-        ei       = key[1]
+        g, de = pos_lookup[key]
+        ei    = key[1]
         if grid_has_leader_at_end(g, view, ei):
             continue
         try:
             g.AddLeader(de, view)
             new_leader_keys.add(key)
-            output.print_md("    AddLeader → `{}` End{}".format(g.Name, ei))
+            output.print_md(
+                "    AddLeader → `{}` End{}".format(g.Name, ei))
         except Exception as ex:
             logger.debug("AddLeader grid {} end {}: {}".format(
                 g.Id.IntegerValue, ei, ex))
 
     doc.Regenerate()
 
-    # ------------------------------------------------------------------
     # Phase B: iterative nudge
-    # ------------------------------------------------------------------
     for iteration in range(MAX_ITERATIONS):
         positions = collect_bubble_positions(grids, view)
         pairs     = find_colliding_pairs(positions, threshold)
         if not pairs:
             output.print_md(
-                "  Pass {} resolved after {} nudge iteration(s)".format(
+                "  Pass {} resolved after {} iteration(s)".format(
                     pass_num+1, iteration))
             break
 
@@ -419,8 +446,8 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
             net_len = (net_x*net_x + net_y*net_y) ** 0.5
             if net_len < 1e-9:
                 continue
-            nx = (net_x/net_len) * nudge_step
-            ny = (net_y/net_len) * nudge_step
+            nx = (net_x / net_len) * nudge_step
+            ny = (net_y / net_len) * nudge_step
 
             try:
                 leader = move_grid.GetLeader(move_end, view)
@@ -431,16 +458,10 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
                 elbow  = leader.Elbow
                 end    = leader.End
 
-                # ── Fix (1): degenerate leader — Anchor == Elbow ──────────
-                # Happens when reusing a pre-existing leader whose geometry
-                # collapsed. Reset Elbow to midpoint so the segment has
-                # non-zero length before we try to nudge.
+                # Detect degenerate leader (Anchor == Elbow)
                 ae_dist = ((anchor.X-elbow.X)**2 +
                            (anchor.Y-elbow.Y)**2) ** 0.5
                 if ae_dist < DEGENERATE_THRESHOLD:
-                    output.print_md(
-                        "    iter {} `{}` degenerate leader detected — "
-                        "repairing".format(iteration, move_name))
                     repaired = repair_leader(move_grid, move_end,
                                             move_idx, view)
                     if not repaired:
@@ -452,44 +473,30 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
                     anchor = leader.Anchor
                     elbow  = leader.Elbow
                     end    = leader.End
-                    # Verify the repair resolved the degeneracy
-                    ae_dist = ((anchor.X-elbow.X)**2 +
-                               (anchor.Y-elbow.Y)**2) ** 0.5
-                    if ae_dist < DEGENERATE_THRESHOLD:
-                        # Still degenerate after repair — skip
-                        output.print_md(
-                            "    iter {} `{}` still degenerate after repair "
-                            "— skipping".format(iteration, move_name))
-                        continue
 
+                # Proposed new Elbow = current Elbow + nudge step
                 prop_x = elbow.X + nx
                 prop_y = elbow.Y + ny
 
-                clamped = clamp_elbow_to_segment(prop_x, prop_y, anchor, end)
+                # Place Elbow: preserve perpendicular nudge, clamp
+                # only the along-segment component to stay in (0.05, 0.95)
+                new_elbow = place_elbow(prop_x, prop_y, anchor, end)
 
-                if (abs(clamped.X - elbow.X) < 1e-9 and
-                        abs(clamped.Y - elbow.Y) < 1e-9):
+                # Skip if no meaningful movement
+                if (abs(new_elbow.X - elbow.X) < 1e-6 and
+                        abs(new_elbow.Y - elbow.Y) < 1e-6):
                     continue
 
-                leader.Elbow = clamped
+                leader.Elbow = new_elbow
 
                 try:
                     move_grid.SetLeader(move_end, view, leader)
 
-                except Exception as set_ex:
-                    # ── Fix (2): stale End off axis ───────────────────────
-                    # The leader's End point is no longer on the grid axis
-                    # curve (view crop changed since last run). Remove and
-                    # re-add to get a fresh leader, then retry the nudge.
-                    output.print_md(
-                        "    iter {} `{}` SetLeader failed (stale leader) — "
-                        "repairing".format(iteration, move_name))
+                except Exception:
+                    # Stale leader — End off axis. Repair and retry.
                     repaired = repair_leader(move_grid, move_end,
                                             move_idx, view)
                     if not repaired:
-                        errors.append(
-                            "Repair failed grid {} iter {}: {}".format(
-                                move_grid.Id.IntegerValue, iteration, set_ex))
                         continue
                     doc.Regenerate()
                     leader2 = move_grid.GetLeader(move_end, view)
@@ -498,15 +505,13 @@ def run_pass(grids, view, threshold, nudge_step, existing_leader_keys, pass_num)
                     anchor2 = leader2.Anchor
                     elbow2  = leader2.Elbow
                     end2    = leader2.End
-                    prop2_x = elbow2.X + nx
-                    prop2_y = elbow2.Y + ny
-                    clamped2 = clamp_elbow_to_segment(
-                        prop2_x, prop2_y, anchor2, end2)
-                    if (abs(clamped2.X - elbow2.X) < 1e-9 and
-                            abs(clamped2.Y - elbow2.Y) < 1e-9):
+                    new_elbow2 = place_elbow(
+                        elbow2.X + nx, elbow2.Y + ny, anchor2, end2)
+                    if (abs(new_elbow2.X - elbow2.X) < 1e-6 and
+                            abs(new_elbow2.Y - elbow2.Y) < 1e-6):
                         continue
                     try:
-                        leader2.Elbow = clamped2
+                        leader2.Elbow = new_elbow2
                         move_grid.SetLeader(move_end, view, leader2)
                     except Exception as ex2:
                         errors.append(
@@ -541,15 +546,14 @@ def process_view(view, bubble_diam_ft, threshold):
     nudge_step       = threshold / 8.0
     seen_leader_keys = set()
 
-    output.print_md("#### View: `{}`  threshold={:.2f} ft".format(
-        view.Name, threshold))
+    output.print_md("#### View: `{}`".format(view.Name))
 
     for pass_num in range(MAX_PASSES):
         new_keys, errors, had = run_pass(
             grids, view, threshold, nudge_step, seen_leader_keys, pass_num)
 
         all_errors.extend(errors)
-        total_added += len(new_keys)
+        total_added      += len(new_keys)
         seen_leader_keys.update(new_keys)
 
         if not had:
@@ -584,7 +588,7 @@ def main():
     if ref_grid is None:
         script.exit()
 
-    output.print_md("## Grid Bubble Separation — v19.0")
+    output.print_md("## Grid Bubble Separation — v20.0")
     output.print_md("Reference grid: **{}** (ID {})".format(
         ref_grid.Name, ref_grid.Id.IntegerValue))
 
