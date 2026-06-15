@@ -14,7 +14,7 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 ## Requirements
 
 - **Revit 2021 or newer**
-- **pyRevit** installed and configured
+- **pyRevit** installed and configured — download and install from [pyrevitlabs.io](https://pyrevitlabs.io/) if you don't have it yet
 
 ## Installation
 
