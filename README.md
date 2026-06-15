@@ -129,7 +129,3 @@ ComCheck.extension/
             ├── script.py
             └── icon.png
 ```
-
-## Support
-
-For issues or feature requests, contact the RJA Tools team.
