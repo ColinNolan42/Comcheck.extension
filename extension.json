@@ -1,0 +1,7 @@
+{
+    "type": "extension",
+    "name": "comcheck",
+    "description": "RJA Tools — Comcheck PDF sheet placement",
+    "author": "RJA",
+    "version": "0.1.0"
+}
