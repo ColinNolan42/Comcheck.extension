@@ -18,11 +18,27 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 
 ## Installation
 
-1. Copy the `Comcheck.extension` folder to your pyRevit Extensions directory:
+### Method 1: Install via pyRevit Extensions Manager (Recommended)
+
+1. In Revit, open the **pyRevit** tab and click **Extensions** (in the pyRevit panel).
+2. In the Extensions manager window, find the **+ Add extension from URL** / **Install** option.
+3. Paste the repository URL:
+   ```
+   https://github.com/ColinNolan42/ComCheck.extension.git
+   ```
+4. Confirm/Install. pyRevit will clone the repo directly into your Extensions directory.
+5. Reload pyRevit (pyRevit tab → **Reload**) or restart Revit.
+6. The button will appear in the Revit ribbon under **RJA Tools → Sheets → Place Comcheck**.
+
+> Menu wording may vary slightly between pyRevit versions — look for "Add extension," "Install," or a "+" button in the Extensions/Custom Extensions manager, and paste the GitHub URL above when prompted for the repo location.
+
+### Method 2: Manual Copy
+
+1. Clone or download this repository, then copy the `ComCheck.extension` folder to your pyRevit Extensions directory:
    - On Windows: `C:\Users\<username>\AppData\Roaming\pyRevit\Extensions\`
    - On Mac: `~/Library/Application Support/pyRevit/Extensions/`
 
-2. If pyRevit is running, reload extensions (pyRevit → ReloadUI) or restart Revit.
+2. If pyRevit is running, reload extensions (pyRevit → Reload) or restart Revit.
 
 3. The button will appear in the Revit ribbon under **RJA Tools → Sheets → Place Comcheck**.
 
@@ -30,17 +46,33 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 
 ### Basic Workflow
 
-1. **Open a Revit Model** with at least one titleblock type available.
-2. **Click the Place Comcheck Button** in the ribbon.
-3. **Select a PDF File** using the file browser dialog.
+**Steps 1–2: Locate and launch the tool**
+
+![Ribbon location of the Place Comcheck button](images/01-ribbon-placecomcheck.png)
+
+1. **Open a Revit Model** with at least one titleblock type available, and locate the **RJA Tools** tab in the ribbon.
+2. **Click the Place Comcheck Button** (Sheets panel) — this immediately opens a file browser.
+
+3. **Select a PDF File** using the file browser dialog. The tool reads the PDF to auto-detect page count and page size.
+
+**Steps 3–7: Fill out the placement dialog**
+
+![Comcheck Sheet Placement dialog — main fields](images/02-dialog-main.png)
+
 4. **Fill Out the Placement Dialog**:
-   - **Sheet Prefix**: Letter prefix for sheet numbers (e.g., M, E, P) — defaults to "M"
-   - **Sheet Number**: Starting sheet number (e.g., 005, 0.4, or 04) — the tool preserves the format and auto-increments the last number
-   - **Titleblock**: Choose from all available titleblocks in your project
-   - **Sheet Size**: Select 24×36" or 30×42" (other sizes can be configured via Advanced options)
+   - **3. Sheet Prefix**: Letter prefix for sheet numbers (e.g., M, E, P) — defaults to "M"
+   - **4. Sheet Number**: Starting sheet number (e.g., 005, 0.4, or 04) — the tool preserves the format and auto-increments the last number
+   - **5. Titleblock**: Choose from all available titleblocks in your project
+   - **6. Sheet Size**: Select 24×36" or 30×42" (other sizes can be configured via Advanced options)
+   - **7. Advanced**: Optional overrides — see below. Leave collapsed for normal use.
+
+**Step 8: Generate the sheets**
+
 5. **Click "Place Comcheck Sheets"** to generate sheets with all PDF pages placed.
 
 ### Advanced Options (Optional)
+
+![Advanced overrides panel](images/03-advanced-settings.png)
 
 Expand the **Advanced** section to customize layout parameters. All fields are optional — if left blank, defaults for the selected sheet size apply automatically:
 
@@ -81,9 +113,10 @@ Each page image is placed precisely at calculated XY coordinates within the grid
 ## File Structure
 
 ```
-Comcheck.extension/
+ComCheck.extension/
 ├── extension.json
 ├── README.md
+├── INTERNAL_WORKFLOW.md
 └── RJA Tools.tab/
     └── Sheets.panel/
         └── PlaceComcheck.pushbutton/
