@@ -13,13 +13,23 @@ Phone: 720.598.0774
 
 ## INSTALLATION
 
-Install this extension via the pyRevit Extensions manager (pyRevit tab → **Extensions** → **Add extension from URL**) using:
+![pyRevit dropdown menu showing the Extensions button](images/00-pyrevit-extensions-menu.png)
 
-```
-https://github.com/ColinNolan42/ComCheck.extension.git
-```
+1. In Revit, open the **pyRevit** tab and click the **pyRevit** button (top-left of the pyRevit tab, next to Reload) to open the dropdown shown above.
+2. Click **Extensions** (the gear icon). The **pyRevit Extension Manager** window opens.
 
-Then reload pyRevit (pyRevit tab → **Reload**) or restart Revit. The button appears under **RJA Tools → Sheets → Place Comcheck**.
+![pyRevit Extension Manager — Git URL and Add and install](images/00b-pyrevit-extension-manager.png)
+
+3. At the bottom of the window, paste the repository URL into the **Git URL** field:
+   ```
+   https://github.com/ColinNolan42/ComCheck.extension.git
+   ```
+4. Leave **Path** and **Token** at their defaults, then click **Add and install**.
+
+![Extension installed successfully confirmation](images/00c-install-success.png)
+
+5. A confirmation message appears: *Extension "ComCheck.extension" installed successfully! Revit will reload to apply changes.* Click **OK** and restart Revit if it doesn't reload automatically.
+6. The button appears under **RJA Tools → Sheets → Place Comcheck**.
 
 ---
 

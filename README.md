@@ -20,17 +20,23 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 
 ### Method 1: Install via pyRevit Extensions Manager (Recommended)
 
-1. In Revit, open the **pyRevit** tab and click **Extensions** (in the pyRevit panel).
-2. In the Extensions manager window, find the **+ Add extension from URL** / **Install** option.
-3. Paste the repository URL:
+![pyRevit dropdown menu showing the Extensions button](images/00-pyrevit-extensions-menu.png)
+
+1. In Revit, open the **pyRevit** tab and click the **pyRevit** button (top-left of the pyRevit tab, next to Reload) to open the dropdown shown above.
+2. Click **Extensions** (the gear icon). The **pyRevit Extension Manager** window opens.
+
+![pyRevit Extension Manager — Git URL and Add and install](images/00b-pyrevit-extension-manager.png)
+
+3. At the bottom of the window, paste the repository URL into the **Git URL** field:
    ```
    https://github.com/ColinNolan42/ComCheck.extension.git
    ```
-4. Confirm/Install. pyRevit will clone the repo directly into your Extensions directory.
-5. Reload pyRevit (pyRevit tab → **Reload**) or restart Revit.
-6. The button will appear in the Revit ribbon under **RJA Tools → Sheets → Place Comcheck**.
+4. Leave **Path** and **Token** at their defaults, then click **Add and install**.
 
-> Menu wording may vary slightly between pyRevit versions — look for "Add extension," "Install," or a "+" button in the Extensions/Custom Extensions manager, and paste the GitHub URL above when prompted for the repo location.
+![Extension installed successfully confirmation](images/00c-install-success.png)
+
+5. A confirmation message appears: *Extension "ComCheck.extension" installed successfully! Revit will reload to apply changes.* Click **OK** and restart Revit if it doesn't reload automatically.
+6. The button will appear in the Revit ribbon under **RJA Tools → Sheets → Place Comcheck**.
 
 ### Method 2: Manual Copy
 
