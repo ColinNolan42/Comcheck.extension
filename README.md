@@ -14,7 +14,7 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 ## Requirements
 
 - **Revit 2021 or newer**
-- **pyRevit** installed and configured — download and install from [pyrevitlabs.io](https://pyrevitlabs.io/) if you don't have it yet
+- **pyRevit** installed and configured — download the latest release from [pyRevit releases on GitHub](https://github.com/pyrevitlabs/pyRevit/releases?page=1) if you don't have it yet
 
 ## Installation
 
@@ -40,7 +40,7 @@ A pyRevit extension that automates the placement of COMcheck PDF pages as images
 
 ### Method 2: Manual Copy
 
-1. Clone or download this repository, then copy the `ComCheck.extension` folder to your pyRevit Extensions directory:
+1. Copy the `RJA Tools.extension` folder from the shared drive (`G:\Shared drives\Operations\DRAFTING LIBRARY\REVIT\Extensions\`) to your pyRevit Extensions directory:
    - On Windows: `C:\Users\<username>\AppData\Roaming\pyRevit\Extensions\`
    - On Mac: `~/Library/Application Support/pyRevit/Extensions/`
 
